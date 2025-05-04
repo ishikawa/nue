@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .rope import RotaryEmbedding, apply_rotary
+
 
 @dataclass(frozen=True)
 class GPTConfig:
@@ -16,27 +18,6 @@ class GPTConfig:
     dropout: float = 0.0  # no dropout ⇒ deterministic inference
 
 
-# ALiBi positional bias
-class ALiBi(nn.Module):
-    def __init__(self, n_heads: int, ctx_len: int):
-        super().__init__()
-        slopes = (
-            torch.logspace(0, 1, steps=n_heads, base=2.0) - 1
-        )  # monotonically increasing
-        self.register_buffer("slopes", slopes.view(n_heads, 1, 1))  # [h,1,1]
-        self.ctx_len = ctx_len
-
-    def forward(self, q_len: int, k_len: int, device):
-        # bias shape: [h, q, k]
-        arange_q = torch.arange(q_len, device=device).view(1, q_len, 1)
-        arange_k = torch.arange(k_len, device=device).view(1, 1, k_len)
-        bias = (arange_k - arange_q).abs().float()  # distance
-
-        # negative slope → recent tokens preferred
-        # [h, q, k]
-        return -bias * self.slopes  # type: ignore
-
-
 class SelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
@@ -47,36 +28,40 @@ class SelfAttention(nn.Module):
         self.proj = nn.Linear(cfg.n_embed, cfg.n_embed, bias=False)
         self.dropout = cfg.dropout
 
-        # --- マスクを最大 ctx_len で一度だけ作る ---
-        full_alibi = ALiBi(cfg.n_heads, cfg.ctx_len)(
-            cfg.ctx_len, cfg.ctx_len, torch.device("cpu")
-        )
-        full_causal = torch.triu(
-            torch.full((cfg.ctx_len, cfg.ctx_len), float("-inf")), diagonal=1
-        )
-        # shape: [1,h,T,T]
+        # RoPE テーブルを事前計算
+        self.rotary = RotaryEmbedding(self.head_dim, max_pos=cfg.ctx_len)
+
+        # causal-mask は is_causal=True で済む
         self.register_buffer(
-            "attn_bias_full",
-            (full_alibi + full_causal.unsqueeze(0)).unsqueeze(0),  # [1,h,T,T]
+            "casual_mask",
+            torch.triu(
+                torch.full((cfg.ctx_len, cfg.ctx_len), float("-inf")), diagonal=1
+            ),
             persistent=False,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, _ = x.shape
-
-        # --- Q K V ---
         qkv = self.qkv(x).view(B, T, 3, self.n_heads, self.head_dim)
-        q, k, v = qkv.unbind(dim=2)  # [B,T,h,hd] ×3
+        q, k, v = qkv.unbind(dim=2)  # [B,T,h,hd]
         q, k, v = (t.transpose(1, 2) for t in (q, k, v))  # [B,h,T,hd]
 
-        # --- 事前計算マスクを slice して渡す ---
-        attn_mask = self.attn_bias_full[:, :, :T, :T]  # [1,h,T,T] # type: ignore
+        # --- RoPE を適用 ---
+        sin, cos = self.rotary(q)
+        q = apply_rotary(q, sin, cos)
+        k = apply_rotary(k, sin, cos)
 
-        out = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, dropout_p=self.dropout, is_causal=False
+        # --- Attention ---
+        attn_out = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=self.casual_mask[:T, :T],  # [T,T] or None # type: ignore
+            dropout_p=self.dropout,
+            is_causal=False,  # mask を渡すので False
         )  # [B,h,T,hd]
 
-        out = out.transpose(1, 2).contiguous().view(B, T, self.dim)
+        out = attn_out.transpose(1, 2).contiguous().view(B, T, self.dim)
         return self.proj(out)
 
 
