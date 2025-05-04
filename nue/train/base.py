@@ -7,7 +7,7 @@ from typing import Any, cast
 from datasets import Dataset, concatenate_datasets, load_dataset
 from sentencepiece import SentencePieceProcessor
 
-from nue.common import BUILD_DIR, CACHE_DIR
+from nue.common import BUILD_DIR, CACHE_DIR, DATASET_CACHE_DIR
 from nue.minigpt import GPTConfig
 
 from .models import TrainingOptions, TrainingSession
@@ -54,13 +54,13 @@ class BaseTrainer(ABC):
                 "wikimedia/wikipedia",
                 "20231101.ja",
                 split="train",
-                cache_dir=str(CACHE_DIR),
+                cache_dir=str(DATASET_CACHE_DIR),
             ),
             load_dataset(
                 "wikimedia/wikipedia",
                 "20231101.en",
                 split="train[:25%]",
-                cache_dir=str(CACHE_DIR),
+                cache_dir=str(DATASET_CACHE_DIR),
             ),
         ]:
             # Tokenize (batched & parallel)

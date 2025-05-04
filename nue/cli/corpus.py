@@ -6,7 +6,7 @@ from typing import IO, Generator
 
 from datasets import load_dataset
 
-from nue.common import CACHE_DIR
+from nue.common import DATASET_CACHE_DIR
 
 DATASET_LIST = [
     # (
@@ -43,7 +43,9 @@ def __preprocess_text(text: str) -> Generator[str, None, None]:
 
 def build_corpus_line() -> Generator[str, None, None]:
     for path, name, split in DATASET_LIST:
-        dataset = load_dataset(path, name, split=split, cache_dir=str(CACHE_DIR))
+        dataset = load_dataset(
+            path, name, split=split, cache_dir=str(DATASET_CACHE_DIR)
+        )
 
         for item in dataset:
             for line in __preprocess_text(item["text"]):  # type: ignore
