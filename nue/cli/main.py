@@ -4,7 +4,6 @@ import os
 from datetime import datetime
 
 import click
-from sentencepiece import SentencePieceTrainer
 
 from nue.train import Epoch, TrainingOptions, TrainingSession
 
@@ -35,16 +34,23 @@ def build_corpus_command(output_file: str):
 @click.option(
     "--vocab-size",
     "vocab_size",
-    default=24000,
+    default=128_000,
     type=int,
     help="Vocabulary size",
+)
+@click.option(
+    "--special-unk",
+    "special_unk",
+    default="<unk>",
+    type=str,
+    help="Special token for unknown words",
 )
 @click.option(
     "--output-prefix",
     "output_prefix",
     required=True,
     type=str,
-    default="build/sp16k_unigram",
+    default="build/bpe",
     help="Output prefix",
 )
 @click.option(
@@ -55,16 +61,40 @@ def build_corpus_command(output_file: str):
     default="build/corpus.txt",
     help="Input corpus file",
 )
-def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: int):
-    SentencePieceTrainer.Train(
-        input=corpus_file,
-        model_prefix=output_prefix,
-        vocab_size=vocab_size,
-        character_coverage=0.9995,
-        model_type="unigram",
-        # Use only a subset of sentences and shuffle them to reduce bias
-        input_sentence_size=1_000_000,
-        shuffle_input_sentence=True,
+def train_tokenizer_command(
+    *, output_prefix: str, corpus_file: str, vocab_size: int, special_unk: str
+):
+    # set the following environment variable to enable parallelism
+    os.environ["TOKENIZERS_PARALLELISM"] = "true"
+    from tokenizers import Tokenizer, models, pre_tokenizers, trainers
+
+    tokenizer = Tokenizer(
+        models.BPE(
+            # 理論上 OOV はありえないが、実装上の都合で
+            unk_token=special_unk,
+        )
+    )
+
+    # バイト単位に分割するプリトークナイザーを設定
+    # tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)  # type: ignore
+
+    # https://huggingface.co/docs/tokenizers/api/trainers#tokenizers.trainers.BpeTrainer
+    trainer = trainers.BpeTrainer(
+        vocab_size=vocab_size,  # type: ignore
+        show_progress=True,  # type: ignore
+        initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),  # type: ignore
+        # 低頻度 token はバイト分割に任せる
+        min_frequency=2,  # type: ignore
+        special_tokens=["<s>", "</s>", special_unk, "<pad>"],  # type: ignore
+    )
+
+    # 学習実行
+    tokenizer.train(files=[corpus_file], trainer=trainer)
+
+    # 学習済みモデルを JSON 形式で保存
+    tokenizer.save(output_prefix + ".json")
+    click.secho(
+        "✅ Byte-level BPE tokenizer saved to " + output_prefix + ".json", fg="green"
     )
 
 
