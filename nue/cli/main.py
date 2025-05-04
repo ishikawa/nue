@@ -7,7 +7,6 @@ import click
 from sentencepiece import SentencePieceTrainer
 
 from nue.train import Epoch, TrainingOptions, TrainingSession
-from nue.train.torch import PyTorchTrainer
 
 from .corpus import build_corpus
 
@@ -151,6 +150,8 @@ def train_command(
     model_dir: str | None = None,
     measure_time: bool = False,
 ):
+    from nue.train.torch import PyTorchTrainer
+
     if model_dir is not None:
         click.secho(f"Resuming training from checkpoint {model_dir}", fg="green")
 
