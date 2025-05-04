@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import math
 import os
 import time
 from typing import Optional
@@ -350,10 +351,19 @@ class PyTorchTrainer(BaseTrainer):
 
                             scheduler.step(val_loss)
 
+                            # 平均 loss を計算
+                            avg_loss = total_loss / options.log_interval
+                            # perplexity
+                            ppl = math.exp(avg_loss)
+                            # validation perplexity
+                            val_ppl = math.exp(val_loss)
+
                             progress = (
                                 f"  Step {i_step + 1} "
-                                + f"{colored('loss=', 'cyan')}{total_loss / options.log_interval:.3f} "
+                                + f"{colored('loss=', 'cyan')}{avg_loss:.3f} "
+                                + f"{colored('ppl=', 'cyan')}{ppl:.3f} "
                                 + f"{colored('val_loss=', 'cyan')}{val_loss:.3f} "
+                                + f"{colored('val_ppl=', 'cyan')}{val_ppl:.3f} "
                             )
 
                             lr = scheduler.get_last_lr()[0]
