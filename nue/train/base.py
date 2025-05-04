@@ -8,6 +8,7 @@ from datasets import Dataset, concatenate_datasets, load_dataset
 from sentencepiece import SentencePieceProcessor
 
 from nue.common import BUILD_DIR, CACHE_DIR, DATASET_CACHE_DIR
+from nue.datasets import DATASET_LIST
 from nue.minigpt import GPTConfig
 
 from .models import TrainingOptions, TrainingSession
@@ -49,24 +50,18 @@ class BaseTrainer(ABC):
     def load_dataset(self) -> Dataset:
         datasets: list[Dataset] = []
 
-        for dataset in [
-            load_dataset(
-                "wikimedia/wikipedia",
-                "20231101.ja",
-                split="train",
+        for config in DATASET_LIST:
+            dataset = load_dataset(
+                config.path,
+                config.name,
+                split=config.train_split,
                 cache_dir=str(DATASET_CACHE_DIR),
-            ),
-            load_dataset(
-                "wikimedia/wikipedia",
-                "20231101.en",
-                split="train[:25%]",
-                cache_dir=str(DATASET_CACHE_DIR),
-            ),
-        ]:
+            )
+
             # Tokenize (batched & parallel)
             dataset = dataset.map(
                 tokenize_batch,
-                remove_columns=["text"],
+                remove_columns=[config.content_column],
                 batched=True,
                 num_proc=os.cpu_count(),  # type: ignore
                 desc="Tokenizing dataset (batched & parallel)",  # type: ignore

@@ -176,6 +176,8 @@ cython_debug/
 
 build/*
 !build/.gitkeep
+!build/tokenizer.model
+!build/tokenizer.vocab
 
 cache/datasets/*
 !cache/datasets/.gitkeep

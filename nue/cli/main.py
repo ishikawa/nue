@@ -74,8 +74,8 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
 
 
 @click.command("train")
-@click.option("--n-epochs", "n_epochs", default=20, type=int, help="Number of epochs")
-@click.option("--batch-size", "batch_size", default=96, type=int, help="Batch size")
+@click.option("--n-epochs", "n_epochs", default=10, type=int, help="Number of epochs")
+@click.option("--batch-size", "batch_size", default=64, type=int, help="Batch size")
 @click.option(
     "--ctx-length", "ctx_length", default=256, type=int, help="Context length"
 )
