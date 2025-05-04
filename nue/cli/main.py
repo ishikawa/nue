@@ -35,7 +35,7 @@ def build_corpus_command(output_file: str):
 @click.option(
     "--vocab-size",
     "vocab_size",
-    default=24000,
+    default=32000,
     type=int,
     help="Vocabulary size",
 )
@@ -44,7 +44,7 @@ def build_corpus_command(output_file: str):
     "output_prefix",
     required=True,
     type=str,
-    default="build/sp16k_unigram",
+    default="build/tokenizer",
     help="Output prefix",
 )
 @click.option(
@@ -56,6 +56,8 @@ def build_corpus_command(output_file: str):
     help="Input corpus file",
 )
 def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: int):
+    # Training options
+    # https://github.com/google/sentencepiece/blob/master/doc/options.md
     SentencePieceTrainer.Train(
         input=corpus_file,
         model_prefix=output_prefix,
@@ -63,8 +65,10 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
         character_coverage=0.9995,
         model_type="unigram",
         # Use only a subset of sentences and shuffle them to reduce bias
-        input_sentence_size=1_000_000,
+        input_sentence_size=10_000_000,
         shuffle_input_sentence=True,
+        # To avoid OOV, use byte encoding for unknown words
+        byte_fallback=True,
     )
 
 
