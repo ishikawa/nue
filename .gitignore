@@ -177,5 +177,8 @@ cython_debug/
 build/*
 !build/.gitkeep
 
+cache/*
+!cache/.gitkeep
+
 .DS_Store
 .vscode/

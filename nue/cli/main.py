@@ -6,6 +6,7 @@ from datetime import datetime
 import click
 from sentencepiece import SentencePieceTrainer
 
+from nue.common import BUILD_DIR
 from nue.train import Epoch, TrainingOptions, TrainingSession
 
 from .corpus import build_corpus
@@ -23,7 +24,7 @@ def main():
     "output_file",
     required=True,
     type=click.Path(file_okay=True, dir_okay=False, exists=False),
-    default="build/corpus.txt",
+    default=str(BUILD_DIR / "corpus.txt"),
     help="Output file",
 )
 def build_corpus_command(output_file: str):
@@ -44,7 +45,7 @@ def build_corpus_command(output_file: str):
     "output_prefix",
     required=True,
     type=str,
-    default="build/tokenizer",
+    default=str(BUILD_DIR / "tokenizer"),
     help="Output prefix",
 )
 @click.option(
@@ -52,7 +53,7 @@ def build_corpus_command(output_file: str):
     "corpus_file",
     required=True,
     type=click.Path(file_okay=True, dir_okay=False, exists=True),
-    default="build/corpus.txt",
+    default=str(BUILD_DIR / "corpus.txt"),
     help="Input corpus file",
 )
 def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: int):
@@ -104,7 +105,7 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
 @click.option(
     "--output-path",
     "output_path",
-    default="build/_train",
+    default=str(BUILD_DIR / "_train"),
     type=click.Path(file_okay=False, dir_okay=True, exists=False),
     help="Output directory path for the trained model",
 )

@@ -7,13 +7,14 @@ from typing import Any, cast
 from datasets import Dataset, concatenate_datasets, load_dataset
 from sentencepiece import SentencePieceProcessor
 
+from nue.common import BUILD_DIR, CACHE_DIR
 from nue.minigpt import GPTConfig
 
 from .models import TrainingOptions, TrainingSession
 
 # グローバルにロードしておくと子プロセスが継承できる
 TOKENIZER = SentencePieceProcessor()
-TOKENIZER.Load("build/tokenizer.model")
+TOKENIZER.Load(str(BUILD_DIR / "tokenizer.model"))
 
 
 def tokenize_batch(examples):
@@ -49,8 +50,18 @@ class BaseTrainer(ABC):
         datasets: list[Dataset] = []
 
         for dataset in [
-            load_dataset("wikimedia/wikipedia", "20231101.ja", split="train"),
-            load_dataset("wikimedia/wikipedia", "20231101.en", split="train[:25%]"),
+            load_dataset(
+                "wikimedia/wikipedia",
+                "20231101.ja",
+                split="train",
+                cache_dir=str(CACHE_DIR),
+            ),
+            load_dataset(
+                "wikimedia/wikipedia",
+                "20231101.en",
+                split="train[:25%]",
+                cache_dir=str(CACHE_DIR),
+            ),
         ]:
             # Tokenize (batched & parallel)
             dataset = dataset.map(
