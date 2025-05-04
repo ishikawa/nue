@@ -7,7 +7,7 @@ from typing import Any, cast
 from datasets import Dataset, concatenate_datasets, load_dataset
 from sentencepiece import SentencePieceProcessor
 
-from nue.common import BUILD_DIR, CACHE_DIR, DATASET_CACHE_DIR
+from nue.common import BUILD_DIR, DATASET_CACHE_DIR
 from nue.datasets import DATASET_LIST
 from nue.minigpt import GPTConfig
 
@@ -18,9 +18,12 @@ TOKENIZER = SentencePieceProcessor()
 TOKENIZER.Load(str(BUILD_DIR / "tokenizer.model"))
 
 
-def tokenize_batch(examples):
-    ids = [TOKENIZER.EncodeAsIds(text) for text in examples["text"]]
-    return {"input_ids": ids}
+def build_tokenize_batch(column: str):
+    def tokenize_batch(examples):
+        ids = [TOKENIZER.EncodeAsIds(text) for text in examples[column]]
+        return {"input_ids": ids}
+
+    return tokenize_batch
 
 
 class BaseTrainer(ABC):
@@ -60,7 +63,7 @@ class BaseTrainer(ABC):
 
             # Tokenize (batched & parallel)
             dataset = dataset.map(
-                tokenize_batch,
+                build_tokenize_batch(config.content_column),
                 remove_columns=[config.content_column],
                 batched=True,
                 num_proc=os.cpu_count(),  # type: ignore
