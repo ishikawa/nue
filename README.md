@@ -28,7 +28,8 @@ Keep it simple.
 ### Tokenizer
 
 - 日英のコーパスを用いて SentencePiece + Unigram で学習
-- `vocab_size` は 16,000
+  - `byte_fallback=True` で OOV (語彙外) 回避
+- `vocab_size` は 32,000
   - 日常語・専門語・語尾・助詞などを自然に分割できる
   - 未知語対応力、学習安定性、パラメータサイズもバランスが良い
 

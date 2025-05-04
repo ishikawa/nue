@@ -13,7 +13,7 @@ from .models import TrainingOptions, TrainingSession
 
 # グローバルにロードしておくと子プロセスが継承できる
 TOKENIZER = SentencePieceProcessor()
-TOKENIZER.Load("build/sp16k_unigram.model")
+TOKENIZER.Load("build/tokenizer.model")
 
 
 def tokenize_batch(examples):

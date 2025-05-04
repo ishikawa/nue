@@ -64,10 +64,13 @@ class PyTorchTrainer(BaseTrainer):
             torch.manual_seed(options.seed)
 
         # --------- 1) デバイス設定 (MPS) ---------
-        click.secho("[1/7] Device setup (MPS)", fg="green", bold=True)
+        click.secho("[1/7] Device setup", fg="green", bold=True)
 
         device = detect_device()
-        click.secho(f"Using device: {device}", fg="yellow")
+
+        click.secho(
+            f"vocab_size: {self.config.vocab_size}, device: {device}", fg="cyan"
+        )
 
         # --------- 2) Minimal GPT 初期化 ---------
         click.secho("[2/7] Initialize Minimal GPT", fg="green", bold=True)
