@@ -118,7 +118,11 @@ class PyTorchTrainer(BaseTrainer):
         )
 
         click.secho(
-            f"Loader created (train: {len(dataset):,} rows, val: {len(validation_dataset):,} rows, total tokens: {total_tokens:,})",
+            f"Total tokens: {format_number_abbrev(total_tokens)} ({total_tokens:,})",
+            fg="cyan",
+        )
+        click.secho(
+            f"Loader created (train: {len(dataset):,} rows, val: {len(validation_dataset):,} rows)",
             fg="cyan",
         )
 
@@ -474,3 +478,14 @@ def detect_device() -> torch.device:
         return torch.device("mps")
     else:
         return torch.device("cpu")
+
+
+def format_number_abbrev(n: int) -> str:
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.1f}B"
+    elif n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    elif n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    else:
+        return str(n)
