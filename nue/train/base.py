@@ -7,18 +7,30 @@ from typing import Any, cast
 from datasets import Dataset, concatenate_datasets, load_dataset
 from sentencepiece import SentencePieceProcessor
 
+from nue.common import BUILD_DIR, DATASET_CACHE_DIR
+from nue.datasets import DATASET_LIST
 from nue.minigpt import GPTConfig
 
 from .models import TrainingOptions, TrainingSession
 
 # グローバルにロードしておくと子プロセスが継承できる
 TOKENIZER = SentencePieceProcessor()
-TOKENIZER.Load("build/tokenizer.model")
+TOKENIZER.Load(str(BUILD_DIR / "tokenizer.model"))
 
 
-def tokenize_batch(examples):
-    ids = [TOKENIZER.EncodeAsIds(text) for text in examples["text"]]
-    return {"input_ids": ids}
+def build_tokenize_batch(column: str):
+    def tokenize_batch(examples):
+        ids = []
+        num_tokens = []
+
+        for text in examples[column]:
+            tokens = TOKENIZER.EncodeAsIds(text)
+            num_tokens.append(len(tokens))
+            ids.append(tokens)
+
+        return {"input_ids": ids, "num_tokens": num_tokens}
+
+    return tokenize_batch
 
 
 class BaseTrainer(ABC):
@@ -48,46 +60,53 @@ class BaseTrainer(ABC):
     def load_dataset(self) -> Dataset:
         datasets: list[Dataset] = []
 
-        for dataset in [
-            load_dataset("wikimedia/wikipedia", "20231101.ja", split="train"),
-            load_dataset("wikimedia/wikipedia", "20231101.en", split="train[:25%]"),
-        ]:
+        for dataset_config in DATASET_LIST:
+            dataset = load_dataset(
+                dataset_config.path,
+                dataset_config.name,
+                split=dataset_config.train_split,
+                cache_dir=str(DATASET_CACHE_DIR),
+            )
+
             # Tokenize (batched & parallel)
             dataset = dataset.map(
-                tokenize_batch,
-                remove_columns=["text"],
+                build_tokenize_batch(dataset_config.content_column),
+                remove_columns=[dataset_config.content_column],
                 batched=True,
                 num_proc=os.cpu_count(),  # type: ignore
                 desc="Tokenizing dataset (batched & parallel)",  # type: ignore
             )
 
-            # Filter sequences by length
-            seq_len = self.config.ctx_len + 1
-            dataset = dataset.filter(
-                lambda ex: len(ex["input_ids"]) >= seq_len,
-                num_proc=os.cpu_count(),  # type: ignore
-                desc="Filtering by sequence length",  # type: ignore
-            )
-
-            # 切り出し：先頭から ctx_len+1 トークンを使う例
-            def crop(ex: dict[str, Any]) -> dict[str, Any]:
-                ex["ids"] = ex["input_ids"][:seq_len]
-                return ex
-
-            dataset = dataset.map(
-                crop,
-                remove_columns=["input_ids"],
-                num_proc=os.cpu_count(),  # type: ignore
-                desc="Cropping dataset (batched & parallel)",  # type: ignore
-            )
-
             # 明示的に Dataset 型にキャスト
             dataset = cast(Dataset, dataset)
-            dataset.set_format(type="torch", columns=["ids"])
-
             datasets.append(dataset)
 
+        # 連結して共通前処理
         dataset = concatenate_datasets(datasets)
+
+        # Filter sequences by length
+        seq_len = self.config.ctx_len + 1
+        dataset = dataset.filter(
+            lambda ex: len(ex["input_ids"]) >= seq_len,
+            num_proc=os.cpu_count(),  # type: ignore
+            desc="Filtering by sequence length",  # type: ignore
+        )
+
+        # 切り出し：先頭から ctx_len+1 トークンを使う
+        # 余計なカラムを削除
+        def crop(ex: dict[str, Any]) -> dict[str, Any]:
+            ex["ids"] = ex["input_ids"][:seq_len]
+            return ex
+
+        dataset = dataset.map(
+            crop,
+            remove_columns=["input_ids"],
+            num_proc=os.cpu_count(),  # type: ignore
+            desc="Cropping dataset (batched & parallel)",  # type: ignore
+        )
+
+        dataset.set_format(type="torch", columns=["ids"])
+
         return dataset
 
     def train(self, session: TrainingSession, *, measure_time: bool = False) -> None:

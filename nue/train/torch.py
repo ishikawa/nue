@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import math
 import os
 import time
 from typing import Optional
@@ -85,6 +86,9 @@ class PyTorchTrainer(BaseTrainer):
         dataset = self.load_dataset()
         dataset.set_format(type="torch", columns=["ids"])
 
+        # 合計トークン数を計算
+        total_tokens = sum(dataset["num_tokens"])
+
         # train/test split
         train_and_test_datasets = dataset.train_test_split(test_size=0.05)
         validation_dataset = train_and_test_datasets["test"]
@@ -96,8 +100,10 @@ class PyTorchTrainer(BaseTrainer):
         ) -> tuple[torch.Tensor, torch.Tensor]:
             # batch: list of dicts with "ids"
             data = torch.stack([ex["ids"] for ex in batch], dim=0)
+
             x = data[:, :-1].to(device)  # [B, T]
             y = data[:, 1:].to(device)  # [B, T]
+
             return x, y
 
         # DataLoaderを作成
@@ -114,7 +120,11 @@ class PyTorchTrainer(BaseTrainer):
         )
 
         click.secho(
-            f"Loader created (train: {len(dataset)}, validation: {len(validation_dataset)})",
+            f"Total tokens: {format_number_abbrev(total_tokens)} ({total_tokens:,})",
+            fg="cyan",
+        )
+        click.secho(
+            f"Loader created (train: {len(dataset):,} rows, val: {len(validation_dataset):,} rows)",
             fg="cyan",
         )
 
@@ -350,10 +360,19 @@ class PyTorchTrainer(BaseTrainer):
 
                             scheduler.step(val_loss)
 
+                            # 平均 loss を計算
+                            avg_loss = total_loss / options.log_interval
+                            # perplexity
+                            ppl = math.exp(avg_loss)
+                            # validation perplexity
+                            val_ppl = math.exp(val_loss)
+
                             progress = (
                                 f"  Step {i_step + 1} "
-                                + f"{colored('loss=', 'cyan')}{total_loss / options.log_interval:.3f} "
+                                + f"{colored('loss=', 'cyan')}{avg_loss:.3f} "
+                                + f"{colored('ppl=', 'cyan')}{ppl:.3f} "
                                 + f"{colored('val_loss=', 'cyan')}{val_loss:.3f} "
+                                + f"{colored('val_ppl=', 'cyan')}{val_ppl:.3f} "
                             )
 
                             lr = scheduler.get_last_lr()[0]
@@ -461,3 +480,14 @@ def detect_device() -> torch.device:
         return torch.device("mps")
     else:
         return torch.device("cpu")
+
+
+def format_number_abbrev(n: int) -> str:
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.1f}B"
+    elif n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    elif n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    else:
+        return str(n)

@@ -25,6 +25,10 @@ Keep it simple.
   - Wikipedia
   - Public-Domain の書籍データ
 
+| 名前                                                                       | ライセンス                                                      | 備考 |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------- | ---- |
+| [Wikimedia Wikipedia](https://huggingface.co/datasets/wikimedia/wikipedia) | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |      |
+
 ### Tokenizer
 
 - 日英のコーパスを用いて SentencePiece + Unigram で学習
