@@ -7,9 +7,8 @@ import click
 from sentencepiece import SentencePieceTrainer
 
 from nue.common import BUILD_DIR
+from nue.corpus import build_corpus
 from nue.train import Epoch, TrainingOptions, TrainingSession
-
-from .corpus import build_corpus
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -70,6 +69,10 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
         shuffle_input_sentence=True,
         # To avoid OOV, use byte encoding for unknown words
         byte_fallback=True,
+        pad_id=0,
+        unk_id=1,
+        bos_id=2,
+        eos_id=3,
     )
 
 
@@ -138,6 +141,13 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     is_flag=True,
     help="Measure time for each step.",
 )
+@click.option(
+    "--override-data-size",
+    "override_data_size",
+    type=str,
+    default=None,
+    help="Override data size for training. (e.g. 10%')",
+)
 def train_command(
     n_epochs: int,
     batch_size: int,
@@ -154,8 +164,9 @@ def train_command(
     output_path: str,
     model_dir: str | None = None,
     measure_time: bool = False,
+    override_data_size: str | None = None,
 ):
-    from nue.train.torch import PyTorchTrainer
+    from nue.train import PyTorchTrainer
 
     if model_dir is not None:
         click.secho(f"Resuming training from checkpoint {model_dir}", fg="green")
@@ -212,7 +223,11 @@ def train_command(
     )
 
     trainer = PyTorchTrainer(training_options)
-    trainer.train(training_session, measure_time=measure_time)
+    trainer.train(
+        training_session,
+        measure_time=measure_time,
+        override_data_size=override_data_size,
+    )
 
 
 main.add_command(build_corpus_command)

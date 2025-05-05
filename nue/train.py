@@ -2,62 +2,196 @@ import dataclasses
 import json
 import math
 import os
+import re
 import time
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, cast
 
 import click
 import torch
+from datasets import Dataset, concatenate_datasets, load_dataset
+from sentencepiece import SentencePieceProcessor
 from termcolor import colored
+from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from yaspin import yaspin
 from yaspin.core import Yaspin
 
-from nue.minigpt import MinimalGPT, init_weights
+from nue.common import BUILD_DIR, DATASET_CACHE_DIR
+from nue.datasets import DATASET_LIST
+from nue.gpt import GPTConfig, MinimalGPT, init_weights
 
-from .base import BaseTrainer
-from .models import Epoch, TrainingSession
+# グローバルにロードしておくと子プロセスが継承できる
+TOKENIZER = SentencePieceProcessor()
+TOKENIZER.Load(str(BUILD_DIR / "tokenizer.model"))
+
+PAD_ID: int = TOKENIZER.pad_id()  # 例: 0
+IGNORE = -100  # CrossEntropyLoss が無視する値
+
+assert PAD_ID is not None
+assert isinstance(PAD_ID, int)
+assert PAD_ID >= 0, "PAD_ID must be non-negative"
+
+# NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出ることがある
+#
+# [MPS] MultiheadAttention with masks and dropout produces NaNs #151667
+# https://github.com/pytorch/pytorch/issues/151667
+#
+# このフラグを True にすると、評価時は CPU で推論する
+CPU_EVALUATION_ON_MPS_BACKEND = False
 
 
-class PyTorchTrainer(BaseTrainer):
+@dataclass(frozen=True)
+class Epoch:
+    epoch: int
+    loss: float
+
+
+@dataclass(frozen=True)
+class TrainingOptions:
+    n_epochs: int
+    batch_size: int
+    ctx_length: int
+    n_embed: int
+    n_heads: int
+    n_layers: int
+    mlp_ratio: int
+    seed: int
+    lr: float
+    lr_scheduler_patience: int
+    log_interval: int
+    save_interval: int
+    model_dir: str
+
+
+@dataclass
+class TrainingSession:
+    epochs: list[Epoch]
+    options: TrainingOptions
+
+
+def build_tokenize_batch(column: str, ctx_len: int):
+    def tokenize_batch(examples):
+        input_ids = []
+        num_tokens = []
+
+        for text in examples[column]:
+            tokens = TOKENIZER.EncodeAsIds(text)
+
+            # コンテキスト長を超える場合は切り捨てる
+            if len(tokens) >= ctx_len:
+                tokens = tokens[:ctx_len]
+
+            num_tokens.append(len(tokens))
+            input_ids.append(tokens)
+
+        return {"input_ids": input_ids, "num_tokens": num_tokens}
+
+    return tokenize_batch
+
+
+def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+    # 1) 各シーケンス
+    seqs = [b["input_ids"] for b in batch]
+
+    # 2) 右パディング
+    padded = pad_sequence(seqs, batch_first=True, padding_value=PAD_ID)  # [B, T]
+
+    # 3) attention_mask （1=実トークン、0=PAD）
+    attn_mask = (padded != PAD_ID).long()  # [B, T]
+
+    # 4) Labels の作成
+    # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
+    # - パディング部分は損失計算から除外する必要がある
+
+    # 全ての要素を IGNORE (損失計算で無視される値) で初期化
+    labels = torch.full_like(padded, IGNORE)
+
+    # input_ids を左シフトして labels に代入することで、
+    # labels[i] <- input_ids[i+1]
+    labels[:, :-1] = padded[:, 1:]
+
+    # ラベルが PAD_ID となっている箇所を IGNORE にする
+    labels[labels == PAD_ID] = IGNORE
+
+    return {
+        "input_ids": padded,
+        "attention_mask": attn_mask,
+        "labels": labels,
+    }
+
+
+class PyTorchTrainer:
+    config: GPTConfig
+    options: TrainingOptions
     model: MinimalGPT | None = None
 
-    def name(self) -> str:
-        return "pytorch"
-
-    def evaluate(
+    def __init__(
         self,
-        dataloader: DataLoader,
-        criterion: torch.nn.Module,
+        /,
+        options: TrainingOptions,
+    ) -> None:
+        self.options = options
+
+        self.config = GPTConfig(
+            vocab_size=TOKENIZER.vocab_size(),
+            ctx_len=options.ctx_length,
+            n_embed=options.n_embed,
+            n_heads=options.n_heads,
+            n_layers=options.n_layers,
+            mlp_ratio=options.mlp_ratio,
+        )
+
+    def load_dataset(self, *, override_data_size: Optional[str] = None) -> Dataset:
+        datasets: list[Dataset] = []
+
+        for dataset_config in DATASET_LIST:
+            split = dataset_config.train_split
+
+            if override_data_size is not None:
+                if m := re.match(r"^(\w+)", split):
+                    split = f"{m.group(1)}[:{override_data_size}]"
+                else:
+                    split = f"{split}[:{override_data_size}]"
+                # print(f"Overriding split: {split}")
+
+            dataset = load_dataset(
+                dataset_config.path,
+                dataset_config.name,
+                split=split,
+                cache_dir=str(DATASET_CACHE_DIR),
+            )
+
+            # Tokenize (batched & parallel)
+            dataset = dataset.map(
+                build_tokenize_batch(
+                    dataset_config.content_column, self.config.ctx_len
+                ),
+                remove_columns=[dataset_config.content_column],
+                batched=True,
+                num_proc=os.cpu_count(),  # type: ignore
+                desc="Tokenizing dataset (batched & parallel)",  # type: ignore
+            )
+
+            # 明示的に Dataset 型にキャスト
+            dataset = cast(Dataset, dataset)
+            datasets.append(dataset)
+
+        # 連結して共通前処理
+        dataset = concatenate_datasets(datasets)
+        dataset.set_format(type="torch", columns=["input_ids"])
+
+        return dataset
+
+    def train(
+        self,
+        session: TrainingSession,
         *,
-        max_tokens: Optional[int] = None,
-    ) -> float:
-        device = detect_device()
-
-        assert self.model is not None
-
-        total_loss = 0.0
-        total_tokens = 0
-
-        with torch.no_grad():
-            for batch in dataloader:
-                # batch["ids"] が (B, L) の tensor だとして
-                inputs = batch["ids"][:, :-1].to(device)  # ひとトークンずらし
-                labels = batch["ids"][:, 1:].to(device)
-                outputs = self.model(inputs)  # 出力は (B, L, vocab_size)
-                logits = outputs.logits if hasattr(outputs, "logits") else outputs
-                loss = criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
-                num_tokens = (labels != -100).sum().item()
-                total_loss += loss.item() * num_tokens
-                total_tokens += num_tokens
-                if max_tokens is not None and total_tokens >= max_tokens:
-                    break
-
-        avg_loss = total_loss / total_tokens
-        return avg_loss
-
-    def _train(self, session: TrainingSession, *, measure_time: bool = False) -> None:
+        override_data_size: Optional[str] = None,
+        measure_time: bool = False,
+    ) -> None:
         options = session.options
 
         # シード設定
@@ -73,6 +207,10 @@ class PyTorchTrainer(BaseTrainer):
             f"vocab_size: {self.config.vocab_size}, device: {device}", fg="cyan"
         )
 
+        # Save hyperparameters in JSON format
+        with open(os.path.join(session.options.model_dir, "hparams.json"), "w") as f:
+            json.dump(dataclasses.asdict(self.config), f, indent=4)
+
         # --------- 2) Minimal GPT 初期化 ---------
         click.secho("[2/7] Initialize Minimal GPT", fg="green", bold=True)
 
@@ -83,8 +221,7 @@ class PyTorchTrainer(BaseTrainer):
 
         # --------- 3) データセット準備 ---------
         click.secho("[3/7] Prepare dataset", fg="green", bold=True)
-        dataset = self.load_dataset()
-        dataset.set_format(type="torch", columns=["ids"])
+        dataset = self.load_dataset(override_data_size=override_data_size)
 
         # 合計トークン数を計算
         total_tokens = sum(dataset["num_tokens"])
@@ -95,28 +232,19 @@ class PyTorchTrainer(BaseTrainer):
         dataset = train_and_test_datasets["train"]
 
         # DataLoader
-        def collate(
-            batch: list[dict[str, torch.Tensor]],
-        ) -> tuple[torch.Tensor, torch.Tensor]:
-            # batch: list of dicts with "ids"
-            data = torch.stack([ex["ids"] for ex in batch], dim=0)
-
-            x = data[:, :-1].to(device)  # [B, T]
-            y = data[:, 1:].to(device)  # [B, T]
-
-            return x, y
 
         # DataLoaderを作成
         loader = DataLoader(
             dataset,  # type: ignore
             batch_size=options.batch_size,
             shuffle=True,
-            collate_fn=collate,
+            collate_fn=collate_pad,
         )
         validation_loader = DataLoader(
             validation_dataset,  # type: ignore
             batch_size=options.batch_size,
             shuffle=False,
+            collate_fn=collate_pad,
         )
 
         click.secho(
@@ -153,15 +281,12 @@ class PyTorchTrainer(BaseTrainer):
             threshold_mode="rel",
         )
 
-        pad_token_id: int | None = self.tokenizer.pad_id()
         criterion = torch.nn.CrossEntropyLoss(
             reduction="mean",
             # Label smoothing for better generalization
             label_smoothing=0.1,
             # Padding token ID
-            ignore_index=-100
-            if pad_token_id is None or pad_token_id < 0
-            else pad_token_id,
+            ignore_index=IGNORE,
         )
 
         # --------- 5) 前回の学習状態を復元 ---------
@@ -291,13 +416,20 @@ class PyTorchTrainer(BaseTrainer):
                             torch.mps.synchronize()
                             t0 = time.perf_counter()
 
-                        x, y = next(loader_iter)
+                        batch = next(loader_iter)
 
                         if measure_time:
                             torch.mps.synchronize()
                             t1 = time.perf_counter()
 
-                        logits = self.model(x)  # [B, T, vocab]
+                        input_ids = batch["input_ids"].to(device)
+                        attention_mask = batch["attention_mask"].to(device)
+                        labels = batch["labels"].to(device)
+
+                        logits = self.model(
+                            input_ids,
+                            attention_mask=attention_mask,
+                        )
 
                         if measure_time:
                             torch.mps.synchronize()
@@ -305,10 +437,11 @@ class PyTorchTrainer(BaseTrainer):
 
                         loss = criterion(
                             logits.view(-1, self.config.vocab_size),
-                            y.view(-1),
+                            labels.view(-1),
                         )
 
                         logits_mean = logits.abs().mean().item()
+
                         set_spinner_text(
                             i_epoch=i_epoch,
                             i_step=i_step,
@@ -408,13 +541,13 @@ class PyTorchTrainer(BaseTrainer):
 
                     with torch.no_grad():
                         prompt = "昔々"
-                        ids: list[int] = self.tokenizer.EncodeAsIds(prompt)
+                        ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
                         idx = torch.tensor([ids], dtype=torch.long).to(device)
                         out = model._generate(idx, max_new_tokens=50)[0].cpu().tolist()
 
                         spinner.write(
                             colored(
-                                f"  Sample generation: {self.tokenizer.DecodeIds(out)}",
+                                f"  Sample generation: {TOKENIZER.DecodeIds(out)}",
                                 "yellow",
                             )
                         )
@@ -466,11 +599,62 @@ class PyTorchTrainer(BaseTrainer):
 
         device = detect_device()
 
-        ids: list[int] = self.tokenizer.EncodeAsIds(prompt)
+        ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
         idx = torch.tensor([ids], dtype=torch.long).to(device)
         out = self.model._generate(idx, max_new_tokens=max_new_length)[0].cpu().tolist()
 
-        return self.tokenizer.DecodeIds(out)
+        return TOKENIZER.DecodeIds(out)
+
+    def evaluate(
+        self,
+        dataloader: DataLoader,
+        criterion: torch.nn.Module,
+        *,
+        max_tokens: Optional[int] = None,
+    ) -> float:
+        assert self.model is not None
+
+        total_loss = 0.0
+        total_tokens = 0
+
+        device = detect_device()
+        original_device = device
+
+        with torch.no_grad():
+            try:
+                # NOTE: MPS BUG? MPS Backend だと推論時に NaN が出ることがあるので、CPU で推論する
+                if CPU_EVALUATION_ON_MPS_BACKEND and device.type == "mps":
+                    device = torch.device("cpu")
+                    self.model = self.model.to(device)
+
+                for batch in dataloader:
+                    input_ids = batch["input_ids"].to(device)
+                    attention_mask = batch["attention_mask"].to(device)
+                    labels = batch["labels"].to(device)
+
+                    logits = self.model(
+                        input_ids,
+                        attention_mask=attention_mask,
+                    )
+
+                    loss = criterion(
+                        logits.view(-1, self.model.cfg.vocab_size),
+                        labels.view(-1),
+                    )
+
+                    num_tokens = (labels != IGNORE).sum().item()
+                    total_loss += loss.item() * num_tokens
+                    total_tokens += num_tokens
+
+                    if max_tokens is not None and total_tokens >= max_tokens:
+                        break
+            finally:
+                # 元のデバイスに戻す
+                self.model.to(original_device)
+                pass
+
+        avg_loss = total_loss / total_tokens
+        return avg_loss
 
 
 def detect_device() -> torch.device:
