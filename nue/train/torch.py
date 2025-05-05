@@ -100,8 +100,10 @@ class PyTorchTrainer(BaseTrainer):
         ) -> tuple[torch.Tensor, torch.Tensor]:
             # batch: list of dicts with "ids"
             data = torch.stack([ex["ids"] for ex in batch], dim=0)
+
             x = data[:, :-1].to(device)  # [B, T]
             y = data[:, 1:].to(device)  # [B, T]
+
             return x, y
 
         # DataLoaderを作成
