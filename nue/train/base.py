@@ -2,7 +2,7 @@ import dataclasses
 import json
 import os
 from abc import ABC, abstractmethod
-from typing import Any, cast
+from typing import cast
 
 from datasets import Dataset, concatenate_datasets, load_dataset
 from sentencepiece import SentencePieceProcessor
