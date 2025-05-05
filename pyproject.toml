@@ -29,7 +29,7 @@ ruff = "^0.11.7"
 pyright = "^1.1.400"
 
 [tool.poetry.scripts]
-nue = "nue.cli.main:main"
+nue = "nue.cli:main"
 
 [tool.pyright]
 include = ["nue"]

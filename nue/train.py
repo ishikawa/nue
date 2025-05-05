@@ -4,6 +4,7 @@ import math
 import os
 import re
 import time
+from dataclasses import dataclass
 from typing import Optional, cast
 
 import click
@@ -21,8 +22,6 @@ from yaspin.core import Yaspin
 from nue.common import BUILD_DIR, DATASET_CACHE_DIR
 from nue.datasets import DATASET_LIST
 from nue.gpt import GPTConfig, MinimalGPT, init_weights
-
-from .models import Epoch, TrainingOptions, TrainingSession
 
 # グローバルにロードしておくと子プロセスが継承できる
 TOKENIZER = SentencePieceProcessor()
@@ -42,6 +41,35 @@ assert PAD_ID >= 0, "PAD_ID must be non-negative"
 #
 # このフラグを True にすると、評価時は CPU で推論する
 CPU_EVALUATION_ON_MPS_BACKEND = False
+
+
+@dataclass(frozen=True)
+class Epoch:
+    epoch: int
+    loss: float
+
+
+@dataclass(frozen=True)
+class TrainingOptions:
+    n_epochs: int
+    batch_size: int
+    ctx_length: int
+    n_embed: int
+    n_heads: int
+    n_layers: int
+    mlp_ratio: int
+    seed: int
+    lr: float
+    lr_scheduler_patience: int
+    log_interval: int
+    save_interval: int
+    model_dir: str
+
+
+@dataclass
+class TrainingSession:
+    epochs: list[Epoch]
+    options: TrainingOptions
 
 
 def build_tokenize_batch(column: str, ctx_len: int):
