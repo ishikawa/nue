@@ -70,6 +70,10 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
         shuffle_input_sentence=True,
         # To avoid OOV, use byte encoding for unknown words
         byte_fallback=True,
+        pad_id=0,
+        unk_id=1,
+        bos_id=2,
+        eos_id=3,
     )
 
 

@@ -8,6 +8,7 @@ from typing import Optional
 import click
 import torch
 from termcolor import colored
+from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
@@ -16,8 +17,41 @@ from yaspin.core import Yaspin
 
 from nue.minigpt import MinimalGPT, init_weights
 
-from .base import BaseTrainer
+from .base import TOKENIZER, BaseTrainer
 from .models import Epoch, TrainingSession
+
+PAD_ID: int = TOKENIZER.pad_id()  # 例: 0
+IGNORE = -100  # CrossEntropyLoss が無視する値
+
+assert PAD_ID is not None
+assert isinstance(PAD_ID, int)
+assert PAD_ID >= 0, "PAD_ID must be non-negative"
+
+
+def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+    # 1) 各シーケンスを Tensor に
+    seqs = [ex["input_ids"] for ex in batch]
+
+    # 2) 右パディング
+    padded = pad_sequence(seqs, batch_first=True, padding_value=PAD_ID)  # [B, T]
+
+    # 3) attention_mask （1=実トークン、0=PAD）
+    attn_mask = (padded != PAD_ID).long()  # [B, T]
+
+    # 4) labels：次トークン予測用にシフト
+    #    ・labels[:, :-1] = input_ids[:, 1:]
+    #    ・最後の位置は IGNORE
+    labels = torch.full_like(padded, IGNORE)  # 初期値すべて IGNORE
+    labels[:, :-1] = padded[:, 1:]
+
+    # PAD のところも必ず IGNORE
+    labels[padded == PAD_ID] = IGNORE
+
+    return {
+        "input_ids": padded,
+        "attention_mask": attn_mask,
+        "labels": labels,
+    }
 
 
 class PyTorchTrainer(BaseTrainer):
@@ -42,15 +76,24 @@ class PyTorchTrainer(BaseTrainer):
 
         with torch.no_grad():
             for batch in dataloader:
-                # batch["ids"] が (B, L) の tensor だとして
-                inputs = batch["ids"][:, :-1].to(device)  # ひとトークンずらし
-                labels = batch["ids"][:, 1:].to(device)
-                outputs = self.model(inputs)  # 出力は (B, L, vocab_size)
-                logits = outputs.logits if hasattr(outputs, "logits") else outputs
-                loss = criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
-                num_tokens = (labels != -100).sum().item()
+                input_ids = batch["input_ids"].to(device)
+                attention_mask = batch["attention_mask"].to(device)
+                labels = batch["labels"].to(device)
+
+                logits = self.model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                )
+                loss = criterion(
+                    logits.view(-1, self.model.cfg.vocab_size),
+                    labels.view(-1),
+                    ignore_index=IGNORE,
+                )
+
+                num_tokens = (labels != IGNORE).sum().item()
                 total_loss += loss.item() * num_tokens
                 total_tokens += num_tokens
+
                 if max_tokens is not None and total_tokens >= max_tokens:
                     break
 
@@ -84,7 +127,6 @@ class PyTorchTrainer(BaseTrainer):
         # --------- 3) データセット準備 ---------
         click.secho("[3/7] Prepare dataset", fg="green", bold=True)
         dataset = self.load_dataset()
-        dataset.set_format(type="torch", columns=["ids"])
 
         # 合計トークン数を計算
         total_tokens = sum(dataset["num_tokens"])
@@ -95,28 +137,19 @@ class PyTorchTrainer(BaseTrainer):
         dataset = train_and_test_datasets["train"]
 
         # DataLoader
-        def collate(
-            batch: list[dict[str, torch.Tensor]],
-        ) -> tuple[torch.Tensor, torch.Tensor]:
-            # batch: list of dicts with "ids"
-            data = torch.stack([ex["ids"] for ex in batch], dim=0)
-
-            x = data[:, :-1].to(device)  # [B, T]
-            y = data[:, 1:].to(device)  # [B, T]
-
-            return x, y
 
         # DataLoaderを作成
         loader = DataLoader(
             dataset,  # type: ignore
             batch_size=options.batch_size,
             shuffle=True,
-            collate_fn=collate,
+            collate_fn=collate_pad,
         )
         validation_loader = DataLoader(
             validation_dataset,  # type: ignore
             batch_size=options.batch_size,
             shuffle=False,
+            collate_fn=collate_pad,
         )
 
         click.secho(
@@ -153,15 +186,12 @@ class PyTorchTrainer(BaseTrainer):
             threshold_mode="rel",
         )
 
-        pad_token_id: int | None = self.tokenizer.pad_id()
         criterion = torch.nn.CrossEntropyLoss(
             reduction="mean",
             # Label smoothing for better generalization
             label_smoothing=0.1,
             # Padding token ID
-            ignore_index=-100
-            if pad_token_id is None or pad_token_id < 0
-            else pad_token_id,
+            ignore_index=IGNORE,
         )
 
         # --------- 5) 前回の学習状態を復元 ---------
@@ -291,13 +321,20 @@ class PyTorchTrainer(BaseTrainer):
                             torch.mps.synchronize()
                             t0 = time.perf_counter()
 
-                        x, y = next(loader_iter)
+                        batch = next(loader_iter)
 
                         if measure_time:
                             torch.mps.synchronize()
                             t1 = time.perf_counter()
 
-                        logits = self.model(x)  # [B, T, vocab]
+                        input_ids = batch["input_ids"].to(device)
+                        attention_mask = batch["attention_mask"].to(device)
+                        labels = batch["labels"].to(device)
+
+                        logits = self.model(
+                            input_ids,
+                            attention_mask=attention_mask,
+                        )
 
                         if measure_time:
                             torch.mps.synchronize()
@@ -305,10 +342,11 @@ class PyTorchTrainer(BaseTrainer):
 
                         loss = criterion(
                             logits.view(-1, self.config.vocab_size),
-                            y.view(-1),
+                            labels.view(-1),
                         )
 
                         logits_mean = logits.abs().mean().item()
+
                         set_spinner_text(
                             i_epoch=i_epoch,
                             i_step=i_step,

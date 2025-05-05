@@ -57,14 +57,13 @@ class SelfAttention(nn.Module):
         # build combined attention mask
         # causal: [T, T] -> [1, 1, T, T]
         causal = self.causal_mask[:T, :T].unsqueeze(0).unsqueeze(0)  # type: ignore
+        attn_mask = causal  # float32
+
         if attention_mask is not None:
-            # attention_mask: [B, T] with 1 for real tokens, 0 for PAD
-            # pad_mask: True for pad positions -> [B, 1, 1, T]
-            pad = (attention_mask == 0).view(B, 1, 1, T)
-            # convert to float mask -inf where pad
-            pad = pad.to(x.dtype) * float("-inf")
-            # broadcast causal to [B, H, T, T] and pad similarly
-            attn_mask = causal + pad
+            # attention_mask: 1=token, 0=pad  → pad 位置に -1e4
+            # -inf を bfloat16 / fp16 に直接変換すると NaN が出る。特に MPS や一部 GPU のハードウェア実装で顕著
+            pad = (attention_mask == 0).view(B, 1, 1, T).float() * -1e4
+            attn_mask = attn_mask + pad  # broadcasting
         else:
             attn_mask = causal  # [1, 1, T, T]
 
@@ -120,10 +119,13 @@ class MinimalGPT(nn.Module):
         self.head.weight = self.tok_emb.weight
 
     def forward(
-        self, idx: torch.LongTensor, *, attention_mask: torch.Tensor | None = None
+        self,
+        input_ids: torch.LongTensor,
+        *,
+        attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        # idx: [B, T], attention_mask: [B, T]
-        x = self.tok_emb(idx)  # [B, T, D]
+        # input_ids: [B, T], attention_mask: [B, T]
+        x = self.tok_emb(input_ids)  # [B, T, D]
         for block in self.blocks:
             x = block(x, attention_mask=attention_mask)
         x = self.ln_f(x)

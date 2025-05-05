@@ -18,17 +18,22 @@ TOKENIZER = SentencePieceProcessor()
 TOKENIZER.Load(str(BUILD_DIR / "tokenizer.model"))
 
 
-def build_tokenize_batch(column: str):
+def build_tokenize_batch(column: str, seq_len: int):
     def tokenize_batch(examples):
-        ids = []
+        input_ids = []
         num_tokens = []
 
         for text in examples[column]:
             tokens = TOKENIZER.EncodeAsIds(text)
-            num_tokens.append(len(tokens))
-            ids.append(tokens)
 
-        return {"input_ids": ids, "num_tokens": num_tokens}
+            # crop
+            if len(tokens) >= seq_len:
+                tokens = tokens[:seq_len]
+
+            num_tokens.append(len(tokens))
+            input_ids.append(tokens)
+
+        return {"input_ids": input_ids, "num_tokens": num_tokens}
 
     return tokenize_batch
 
@@ -70,7 +75,9 @@ class BaseTrainer(ABC):
 
             # Tokenize (batched & parallel)
             dataset = dataset.map(
-                build_tokenize_batch(dataset_config.content_column),
+                build_tokenize_batch(
+                    dataset_config.content_column, self.config.ctx_len
+                ),
                 remove_columns=[dataset_config.content_column],
                 batched=True,
                 num_proc=os.cpu_count(),  # type: ignore
@@ -83,29 +90,7 @@ class BaseTrainer(ABC):
 
         # 連結して共通前処理
         dataset = concatenate_datasets(datasets)
-
-        # Filter sequences by length
-        seq_len = self.config.ctx_len + 1
-        dataset = dataset.filter(
-            lambda ex: len(ex["input_ids"]) >= seq_len,
-            num_proc=os.cpu_count(),  # type: ignore
-            desc="Filtering by sequence length",  # type: ignore
-        )
-
-        # 切り出し：先頭から ctx_len+1 トークンを使う
-        # 余計なカラムを削除
-        def crop(ex: dict[str, Any]) -> dict[str, Any]:
-            ex["ids"] = ex["input_ids"][:seq_len]
-            return ex
-
-        dataset = dataset.map(
-            crop,
-            remove_columns=["input_ids"],
-            num_proc=os.cpu_count(),  # type: ignore
-            desc="Cropping dataset (batched & parallel)",  # type: ignore
-        )
-
-        dataset.set_format(type="torch", columns=["ids"])
+        dataset.set_format(type="torch", columns=["input_ids"])
 
         return dataset
 
