@@ -12,7 +12,12 @@ dependencies = [
     "datasets (>=3.5.1,<4.0.0)",
     "sentencepiece (>=0.2.0,<0.3.0)",
     "click (>=8.1.8,<9.0.0)",
-    "torch (>=2.7.0,<3.0.0)",
+    # NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出ることがある
+    # See: `CPU_EVALUATION_ON_MPS_BACKEND` in `train/torch.py`
+    #
+    # [MPS] MultiheadAttention with masks and dropout produces NaNs #151667
+    # https://github.com/pytorch/pytorch/issues/151667
+    "torch (==2.5.1)",
     "yaspin (>=3.1.0,<4.0.0)",
     "termcolor (>=2.2.0,<2.4.0)"
 ]

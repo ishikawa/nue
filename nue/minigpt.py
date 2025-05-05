@@ -35,7 +35,8 @@ class SelfAttention(nn.Module):
         # RoPE precomputed
         self.rotary = RotaryEmbedding(self.head_dim, max_pos=cfg.ctx_len)
 
-        # causal mask [T, T]
+        # causal mask [T, T] (True means ignore)
+        # 上三角行列（対角線含まず）が True になるマスク
         #
         # NOTE: MPS は SDPA に渡す attn_mask を bool か "Q・K と同じ dtype" しか受け付けな
         #       い。 float の -inf や -1e4 を使うと、暗黙のキャストで NaN になってしまう問
@@ -75,8 +76,7 @@ class SelfAttention(nn.Module):
             # attn_mask = causal | pad  # bool OR
 
             pad_k = (attention_mask == 0).to(torch.bool).view(B, 1, 1, T)  # key 方向
-            pad_q = pad_k.transpose(-1, -2)  # query 方向
-            attn_mask = causal | pad_k | pad_q  # bool OR
+            attn_mask = causal | pad_k  # bool OR
         else:
             attn_mask = causal  # [1, 1, T, T]
 

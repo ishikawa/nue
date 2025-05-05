@@ -35,8 +35,13 @@ assert PAD_ID is not None
 assert isinstance(PAD_ID, int)
 assert PAD_ID >= 0, "PAD_ID must be non-negative"
 
-# NOTE: MPS Backend だと推論時に NaN が出ることがあるので、CPU で推論する
-CPU_EVALUATION_ON_MPS_BACKEND = True
+# NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出ることがある
+#
+# [MPS] MultiheadAttention with masks and dropout produces NaNs #151667
+# https://github.com/pytorch/pytorch/issues/151667
+#
+# このフラグを True にすると、評価時は CPU で推論する
+CPU_EVALUATION_ON_MPS_BACKEND = False
 
 
 def build_tokenize_batch(column: str, ctx_len: int):
