@@ -2,11 +2,14 @@ import dataclasses
 import json
 import math
 import os
+import re
 import time
-from typing import Optional
+from typing import Optional, cast
 
 import click
 import torch
+from datasets import Dataset, concatenate_datasets, load_dataset
+from sentencepiece import SentencePieceProcessor
 from termcolor import colored
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
@@ -15,10 +18,15 @@ from torch.utils.data import DataLoader
 from yaspin import yaspin
 from yaspin.core import Yaspin
 
-from nue.minigpt import MinimalGPT, init_weights
+from nue.common import BUILD_DIR, DATASET_CACHE_DIR
+from nue.datasets import DATASET_LIST
+from nue.minigpt import GPTConfig, MinimalGPT, init_weights
 
-from .base import TOKENIZER, BaseTrainer
-from .models import Epoch, TrainingSession
+from .models import Epoch, TrainingOptions, TrainingSession
+
+# グローバルにロードしておくと子プロセスが継承できる
+TOKENIZER = SentencePieceProcessor()
+TOKENIZER.Load(str(BUILD_DIR / "tokenizer.model"))
 
 PAD_ID: int = TOKENIZER.pad_id()  # 例: 0
 IGNORE = -100  # CrossEntropyLoss が無視する値
@@ -28,9 +36,29 @@ assert isinstance(PAD_ID, int)
 assert PAD_ID >= 0, "PAD_ID must be non-negative"
 
 
+def build_tokenize_batch(column: str, ctx_len: int):
+    def tokenize_batch(examples):
+        input_ids = []
+        num_tokens = []
+
+        for text in examples[column]:
+            tokens = TOKENIZER.EncodeAsIds(text)
+
+            # コンテキスト長を超える場合は切り捨てる
+            if len(tokens) >= ctx_len:
+                tokens = tokens[:ctx_len]
+
+            num_tokens.append(len(tokens))
+            input_ids.append(tokens)
+
+        return {"input_ids": input_ids, "num_tokens": num_tokens}
+
+    return tokenize_batch
+
+
 def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
-    # 1) 各シーケンスを Tensor に
-    seqs = [ex["input_ids"] for ex in batch]
+    # 1) 各シーケンス
+    seqs = [b["input_ids"] for b in batch]
 
     # 2) 右パディング
     padded = pad_sequence(seqs, batch_first=True, padding_value=PAD_ID)  # [B, T]
@@ -59,61 +87,75 @@ def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]
     }
 
 
-class PyTorchTrainer(BaseTrainer):
+class PyTorchTrainer:
+    config: GPTConfig
+    options: TrainingOptions
     model: MinimalGPT | None = None
 
-    def name(self) -> str:
-        return "pytorch"
-
-    def evaluate(
+    def __init__(
         self,
-        dataloader: DataLoader,
-        criterion: torch.nn.Module,
+        /,
+        options: TrainingOptions,
+    ) -> None:
+        self.options = options
+
+        self.config = GPTConfig(
+            vocab_size=TOKENIZER.vocab_size(),
+            ctx_len=options.ctx_length,
+            n_embed=options.n_embed,
+            n_heads=options.n_heads,
+            n_layers=options.n_layers,
+            mlp_ratio=options.mlp_ratio,
+        )
+
+    def load_dataset(self, *, override_data_size: Optional[str] = None) -> Dataset:
+        datasets: list[Dataset] = []
+
+        for dataset_config in DATASET_LIST:
+            split = dataset_config.train_split
+
+            if override_data_size is not None:
+                if m := re.match(r"^(\w+)", split):
+                    split = f"{m.group(1)}[:{override_data_size}]"
+                else:
+                    split = f"{split}[:{override_data_size}]"
+                # print(f"Overriding split: {split}")
+
+            dataset = load_dataset(
+                dataset_config.path,
+                dataset_config.name,
+                split=split,
+                cache_dir=str(DATASET_CACHE_DIR),
+            )
+
+            # Tokenize (batched & parallel)
+            dataset = dataset.map(
+                build_tokenize_batch(
+                    dataset_config.content_column, self.config.ctx_len
+                ),
+                remove_columns=[dataset_config.content_column],
+                batched=True,
+                num_proc=os.cpu_count(),  # type: ignore
+                desc="Tokenizing dataset (batched & parallel)",  # type: ignore
+            )
+
+            # 明示的に Dataset 型にキャスト
+            dataset = cast(Dataset, dataset)
+            datasets.append(dataset)
+
+        # 連結して共通前処理
+        dataset = concatenate_datasets(datasets)
+        dataset.set_format(type="torch", columns=["input_ids"])
+
+        return dataset
+
+    def train(
+        self,
+        session: TrainingSession,
         *,
-        max_tokens: Optional[int] = None,
-    ) -> float:
-        device = detect_device()
-
-        assert self.model is not None
-
-        total_loss = 0.0
-        total_tokens = 0
-
-        with torch.no_grad():
-            try:
-                # NOTE: MPS BUG? MPS Backend だと推論時に NaN が出ることがあるので、CPU で推論する
-                cpu = torch.device("cpu")
-                cpu_model = self.model.to(cpu)
-
-                for batch in dataloader:
-                    input_ids = batch["input_ids"].to(cpu)
-                    attention_mask = batch["attention_mask"].to(cpu)
-                    labels = batch["labels"].to(cpu)
-
-                    logits = cpu_model(
-                        input_ids,
-                        attention_mask=attention_mask,
-                    )
-
-                    loss = criterion(
-                        logits.view(-1, self.model.cfg.vocab_size),
-                        labels.view(-1),
-                    )
-
-                    num_tokens = (labels != IGNORE).sum().item()
-                    total_loss += loss.item() * num_tokens
-                    total_tokens += num_tokens
-
-                    if max_tokens is not None and total_tokens >= max_tokens:
-                        break
-            finally:
-                # GPU に戻す
-                self.model.to(device)
-
-        avg_loss = total_loss / total_tokens
-        return avg_loss
-
-    def _train(self, session: TrainingSession, *, measure_time: bool = False) -> None:
+        override_data_size: Optional[str] = None,
+        measure_time: bool = False,
+    ) -> None:
         options = session.options
 
         # シード設定
@@ -129,6 +171,10 @@ class PyTorchTrainer(BaseTrainer):
             f"vocab_size: {self.config.vocab_size}, device: {device}", fg="cyan"
         )
 
+        # Save hyperparameters in JSON format
+        with open(os.path.join(session.options.model_dir, "hparams.json"), "w") as f:
+            json.dump(dataclasses.asdict(self.config), f, indent=4)
+
         # --------- 2) Minimal GPT 初期化 ---------
         click.secho("[2/7] Initialize Minimal GPT", fg="green", bold=True)
 
@@ -139,7 +185,7 @@ class PyTorchTrainer(BaseTrainer):
 
         # --------- 3) データセット準備 ---------
         click.secho("[3/7] Prepare dataset", fg="green", bold=True)
-        dataset = self.load_dataset()
+        dataset = self.load_dataset(override_data_size=override_data_size)
 
         # 合計トークン数を計算
         total_tokens = sum(dataset["num_tokens"])
@@ -459,13 +505,13 @@ class PyTorchTrainer(BaseTrainer):
 
                     with torch.no_grad():
                         prompt = "昔々"
-                        ids: list[int] = self.tokenizer.EncodeAsIds(prompt)
+                        ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
                         idx = torch.tensor([ids], dtype=torch.long).to(device)
                         out = model._generate(idx, max_new_tokens=50)[0].cpu().tolist()
 
                         spinner.write(
                             colored(
-                                f"  Sample generation: {self.tokenizer.DecodeIds(out)}",
+                                f"  Sample generation: {TOKENIZER.DecodeIds(out)}",
                                 "yellow",
                             )
                         )
@@ -517,16 +563,62 @@ class PyTorchTrainer(BaseTrainer):
 
         device = detect_device()
 
-        ids: list[int] = self.tokenizer.EncodeAsIds(prompt)
+        ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
         idx = torch.tensor([ids], dtype=torch.long).to(device)
         out = self.model._generate(idx, max_new_tokens=max_new_length)[0].cpu().tolist()
 
-        return self.tokenizer.DecodeIds(out)
+        return TOKENIZER.DecodeIds(out)
+
+    def evaluate(
+        self,
+        dataloader: DataLoader,
+        criterion: torch.nn.Module,
+        *,
+        max_tokens: Optional[int] = None,
+    ) -> float:
+        device = detect_device()
+
+        assert self.model is not None
+
+        total_loss = 0.0
+        total_tokens = 0
+
+        with torch.no_grad():
+            try:
+                # NOTE: MPS BUG? MPS Backend だと推論時に NaN が出ることがあるので、CPU で推論する
+                cpu = torch.device("cpu")
+                cpu_model = self.model.to(cpu)
+
+                for batch in dataloader:
+                    input_ids = batch["input_ids"].to(cpu)
+                    attention_mask = batch["attention_mask"].to(cpu)
+                    labels = batch["labels"].to(cpu)
+
+                    logits = cpu_model(
+                        input_ids,
+                        attention_mask=attention_mask,
+                    )
+
+                    loss = criterion(
+                        logits.view(-1, self.model.cfg.vocab_size),
+                        labels.view(-1),
+                    )
+
+                    num_tokens = (labels != IGNORE).sum().item()
+                    total_loss += loss.item() * num_tokens
+                    total_tokens += num_tokens
+
+                    if max_tokens is not None and total_tokens >= max_tokens:
+                        break
+            finally:
+                # GPU に戻す
+                self.model.to(device)
+
+        avg_loss = total_loss / total_tokens
+        return avg_loss
 
 
 def detect_device() -> torch.device:
-    # return torch.device("cpu")
-
     if torch.cuda.is_available():
         return torch.device("cuda")
     elif torch.backends.mps.is_available():

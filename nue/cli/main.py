@@ -142,6 +142,13 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     is_flag=True,
     help="Measure time for each step.",
 )
+@click.option(
+    "--override-data-size",
+    "override_data_size",
+    type=str,
+    default=None,
+    help="Override data size for training. (e.g. 10%')",
+)
 def train_command(
     n_epochs: int,
     batch_size: int,
@@ -158,6 +165,7 @@ def train_command(
     output_path: str,
     model_dir: str | None = None,
     measure_time: bool = False,
+    override_data_size: str | None = None,
 ):
     from nue.train.torch import PyTorchTrainer
 
@@ -216,7 +224,11 @@ def train_command(
     )
 
     trainer = PyTorchTrainer(training_options)
-    trainer.train(training_session, measure_time=measure_time)
+    trainer.train(
+        training_session,
+        measure_time=measure_time,
+        override_data_size=override_data_size,
+    )
 
 
 main.add_command(build_corpus_command)

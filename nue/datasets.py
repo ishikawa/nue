@@ -24,7 +24,6 @@ DATASET_LIST = [
         content_column="text",
         tokenizer_split="train[:20%]",
         train_split="train",
-        # train_split="train[:1%]",
     ),
     DatasetConfig(
         path="wikimedia/wikipedia",
@@ -33,7 +32,6 @@ DATASET_LIST = [
         content_column="text",
         tokenizer_split="train[:10%]",
         train_split="train[:30%]",
-        # train_split="train[:1%]",
     ),
     # livedoor ニュースコーパス
     # https://www.rondhuit.com/download.html
@@ -43,6 +41,5 @@ DATASET_LIST = [
         content_column="content",
         tokenizer_split="train",
         train_split="train",
-        # train_split="train[:1%]",
     ),
 ]
