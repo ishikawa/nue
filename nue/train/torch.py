@@ -38,14 +38,19 @@ def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]
     # 3) attention_mask （1=実トークン、0=PAD）
     attn_mask = (padded != PAD_ID).long()  # [B, T]
 
-    # 4) labels：次トークン予測用にシフト
-    #    ・labels[:, :-1] = input_ids[:, 1:]
-    #    ・最後の位置は IGNORE
-    labels = torch.full_like(padded, IGNORE)  # 初期値すべて IGNORE
+    # 4) Labels の作成
+    # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
+    # - パディング部分は損失計算から除外する必要がある
+
+    # 全ての要素を IGNORE (損失計算で無視される値) で初期化
+    labels = torch.full_like(padded, IGNORE)
+
+    # input_ids を左シフトして labels に代入することで、
+    # labels[i] <- input_ids[i+1]
     labels[:, :-1] = padded[:, 1:]
 
-    # PAD のところも必ず IGNORE
-    labels[padded == PAD_ID] = IGNORE
+    # ラベルが PAD_ID となっている箇所を IGNORE にする
+    labels[labels == PAD_ID] = IGNORE
 
     return {
         "input_ids": padded,
@@ -85,15 +90,10 @@ class PyTorchTrainer(BaseTrainer):
                     attention_mask=attention_mask,
                 )
 
-                if not torch.isfinite(logits).all():
-                    print("NaN/Inf in logits")
-
                 loss = criterion(
                     logits.view(-1, self.model.cfg.vocab_size),
                     labels.view(-1),
                 )
-                if not torch.isfinite(loss).all():
-                    print("NaN/Inf in loss")
 
                 num_tokens = (labels != IGNORE).sum().item()
                 total_loss += loss.item() * num_tokens
@@ -124,7 +124,7 @@ class PyTorchTrainer(BaseTrainer):
         # --------- 2) Minimal GPT 初期化 ---------
         click.secho("[2/7] Initialize Minimal GPT", fg="green", bold=True)
 
-        model = MinimalGPT(self.config).to(torch.bfloat16).to(device)
+        model = MinimalGPT(self.config).to(torch.float32).to(device)
         model.apply(init_weights)
 
         self.model = model
@@ -517,6 +517,8 @@ class PyTorchTrainer(BaseTrainer):
 
 
 def detect_device() -> torch.device:
+    # return torch.device("cpu")
+
     if torch.cuda.is_available():
         return torch.device("cuda")
     elif torch.backends.mps.is_available():

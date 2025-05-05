@@ -22,6 +22,9 @@ class GPTConfig:
 class SelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
+
+        assert cfg.n_embed % cfg.n_heads == 0
+
         self.dim = cfg.n_embed
         self.n_heads = cfg.n_heads
         self.head_dim = cfg.n_embed // cfg.n_heads
@@ -52,6 +55,7 @@ class SelfAttention(nn.Module):
         B, T, _ = x.shape
         # project q, k, v
         qkv = self.qkv(x).view(B, T, 3, self.n_heads, self.head_dim)
+
         q, k, v = qkv.unbind(dim=2)  # each [B, T, H, D]
         q, k, v = (t.transpose(1, 2) for t in (q, k, v))  # [B, H, T, D]
 
@@ -67,12 +71,12 @@ class SelfAttention(nn.Module):
         if attention_mask is not None:
             # attention_mask: 1=token, 0=pad  → pad 位置に -1e4
             # -inf を bfloat16 / fp16 に直接変換すると NaN が出る。特に MPS や一部 GPU のハードウェア実装で顕著
-            pad = (attention_mask == 0).view(B, 1, 1, T)
-            attn_mask = causal | pad  # bool OR
+            # pad = (attention_mask == 0).view(B, 1, 1, T)
+            # attn_mask = causal | pad  # bool OR
 
-            # pad_k = (attention_mask == 0).view(B, 1, 1, T)  # key 方向
-            # pad_q = (attention_mask == 0).view(B, 1, T, 1)  # query 方向
-            # attn_mask = causal | pad_k | pad_q  # bool OR
+            pad_k = (attention_mask == 0).to(torch.bool).view(B, 1, 1, T)  # key 方向
+            pad_q = pad_k.transpose(-1, -2)  # query 方向
+            attn_mask = causal | pad_k | pad_q  # bool OR
         else:
             attn_mask = causal  # [1, 1, T, T]
 
@@ -87,9 +91,14 @@ class SelfAttention(nn.Module):
             is_causal=False,
         )
 
+        if not torch.isfinite(attn_out).all():
+            raise ValueError("NaN after scaled_dot_product_attention", attn_out)
+
         # reshape and project
         out = attn_out.transpose(1, 2).contiguous().view(B, T, self.dim)
-        return self.proj(out)
+        out = self.proj(out)
+
+        return out
 
 
 class FeedForward(nn.Module):
@@ -115,8 +124,14 @@ class TransformerBlock(nn.Module):
         self, x: torch.Tensor, *, attention_mask: torch.Tensor | None = None
     ) -> torch.Tensor:
         # pass attention_mask to SelfAttention
-        x = x + self.attn(self.ln1(x), attention_mask=attention_mask)
-        x = x + self.mlp(self.ln2(x))
+        x = self.ln1(x)
+        x = x + self.attn(x, attention_mask=attention_mask)
+        if not torch.isfinite(x).all():
+            raise ValueError("NaN after attn", x)
+
+        x = self.ln2(x)
+        x = x + self.mlp(x)
+
         return x
 
 
