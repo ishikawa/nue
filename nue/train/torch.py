@@ -84,11 +84,16 @@ class PyTorchTrainer(BaseTrainer):
                     input_ids,
                     attention_mask=attention_mask,
                 )
+
+                if not torch.isfinite(logits).all():
+                    print("NaN/Inf in logits")
+
                 loss = criterion(
                     logits.view(-1, self.model.cfg.vocab_size),
                     labels.view(-1),
-                    ignore_index=IGNORE,
                 )
+                if not torch.isfinite(loss).all():
+                    print("NaN/Inf in loss")
 
                 num_tokens = (labels != IGNORE).sum().item()
                 total_loss += loss.item() * num_tokens

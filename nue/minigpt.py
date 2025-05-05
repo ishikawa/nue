@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import cast
 
 import torch
 import torch.nn as nn
@@ -30,12 +31,17 @@ class SelfAttention(nn.Module):
 
         # RoPE precomputed
         self.rotary = RotaryEmbedding(self.head_dim, max_pos=cfg.ctx_len)
+
         # causal mask [T, T]
+        #
+        # NOTE: MPS は SDPA に渡す attn_mask を bool か "Q・K と同じ dtype" しか受け付けな
+        #       い。 float の -inf や -1e4 を使うと、暗黙のキャストで NaN になってしまう問
+        #       題もあるため、 bool の mask を用意
+        causal = torch.triu(torch.ones(cfg.ctx_len, cfg.ctx_len, dtype=torch.bool), 1)
+
         self.register_buffer(
             "causal_mask",
-            torch.triu(
-                torch.full((cfg.ctx_len, cfg.ctx_len), float("-inf")), diagonal=1
-            ),
+            causal,
             persistent=False,
         )
 
@@ -56,21 +62,30 @@ class SelfAttention(nn.Module):
 
         # build combined attention mask
         # causal: [T, T] -> [1, 1, T, T]
-        causal = self.causal_mask[:T, :T].unsqueeze(0).unsqueeze(0)  # type: ignore
-        attn_mask = causal  # float32
+        causal = cast(torch.Tensor, self.causal_mask)[:T, :T].unsqueeze(0).unsqueeze(0)
 
         if attention_mask is not None:
             # attention_mask: 1=token, 0=pad  → pad 位置に -1e4
             # -inf を bfloat16 / fp16 に直接変換すると NaN が出る。特に MPS や一部 GPU のハードウェア実装で顕著
-            pad = (attention_mask == 0).view(B, 1, 1, T).float() * -1e4
-            attn_mask = attn_mask + pad  # broadcasting
+            pad = (attention_mask == 0).view(B, 1, 1, T)
+            attn_mask = causal | pad  # bool OR
+
+            # pad_k = (attention_mask == 0).view(B, 1, 1, T)  # key 方向
+            # pad_q = (attention_mask == 0).view(B, 1, T, 1)  # query 方向
+            # attn_mask = causal | pad_k | pad_q  # bool OR
         else:
             attn_mask = causal  # [1, 1, T, T]
 
         # scaled dot-product attention
+        # [B, H, T, D]
         attn_out = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, dropout_p=self.dropout, is_causal=False
-        )  # [B, H, T, D]
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout,
+            is_causal=False,
+        )
 
         # reshape and project
         out = attn_out.transpose(1, 2).contiguous().view(B, T, self.dim)
