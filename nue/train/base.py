@@ -4,7 +4,6 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, cast
 
-import click
 from datasets import Dataset, concatenate_datasets, load_dataset
 from sentencepiece import SentencePieceProcessor
 
