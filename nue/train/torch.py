@@ -20,7 +20,7 @@ from yaspin.core import Yaspin
 
 from nue.common import BUILD_DIR, DATASET_CACHE_DIR
 from nue.datasets import DATASET_LIST
-from nue.minigpt import GPTConfig, MinimalGPT, init_weights
+from nue.gpt import GPTConfig, MinimalGPT, init_weights
 
 from .models import Epoch, TrainingOptions, TrainingSession
 
