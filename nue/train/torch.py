@@ -86,6 +86,9 @@ class PyTorchTrainer(BaseTrainer):
         dataset = self.load_dataset()
         dataset.set_format(type="torch", columns=["ids"])
 
+        # 合計トークン数を計算
+        total_tokens = sum(dataset["num_tokens"])
+
         # train/test split
         train_and_test_datasets = dataset.train_test_split(test_size=0.05)
         validation_dataset = train_and_test_datasets["test"]
@@ -115,7 +118,7 @@ class PyTorchTrainer(BaseTrainer):
         )
 
         click.secho(
-            f"Loader created (train: {len(dataset)}, validation: {len(validation_dataset)})",
+            f"Loader created (train: {len(dataset):,} rows, val: {len(validation_dataset):,} rows, total tokens: {total_tokens:,})",
             fg="cyan",
         )
 
