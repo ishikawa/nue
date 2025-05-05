@@ -40,7 +40,6 @@ def build_tokenize_batch(column: str, seq_len: int):
 
 class BaseTrainer(ABC):
     config: GPTConfig
-    tokenizer: SentencePieceProcessor = TOKENIZER
     options: TrainingOptions
 
     def __init__(
@@ -58,6 +57,10 @@ class BaseTrainer(ABC):
             n_layers=options.n_layers,
             mlp_ratio=options.mlp_ratio,
         )
+
+    @property
+    def tokenizer(self) -> SentencePieceProcessor:
+        return TOKENIZER
 
     @abstractmethod
     def name(self) -> str: ...
