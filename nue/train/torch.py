@@ -35,6 +35,9 @@ assert PAD_ID is not None
 assert isinstance(PAD_ID, int)
 assert PAD_ID >= 0, "PAD_ID must be non-negative"
 
+# NOTE: MPS Backend だと推論時に NaN が出ることがあるので、CPU で推論する
+CPU_EVALUATION_ON_MPS_BACKEND = True
+
 
 def build_tokenize_batch(column: str, ctx_len: int):
     def tokenize_batch(examples):
@@ -576,25 +579,27 @@ class PyTorchTrainer:
         *,
         max_tokens: Optional[int] = None,
     ) -> float:
-        device = detect_device()
-
         assert self.model is not None
 
         total_loss = 0.0
         total_tokens = 0
 
+        device = detect_device()
+        original_device = device
+
         with torch.no_grad():
             try:
                 # NOTE: MPS BUG? MPS Backend だと推論時に NaN が出ることがあるので、CPU で推論する
-                cpu = torch.device("cpu")
-                cpu_model = self.model.to(cpu)
+                if CPU_EVALUATION_ON_MPS_BACKEND and device.type == "mps":
+                    device = torch.device("cpu")
+                    self.model = self.model.to(device)
 
                 for batch in dataloader:
-                    input_ids = batch["input_ids"].to(cpu)
-                    attention_mask = batch["attention_mask"].to(cpu)
-                    labels = batch["labels"].to(cpu)
+                    input_ids = batch["input_ids"].to(device)
+                    attention_mask = batch["attention_mask"].to(device)
+                    labels = batch["labels"].to(device)
 
-                    logits = cpu_model(
+                    logits = self.model(
                         input_ids,
                         attention_mask=attention_mask,
                     )
@@ -611,8 +616,9 @@ class PyTorchTrainer:
                     if max_tokens is not None and total_tokens >= max_tokens:
                         break
             finally:
-                # GPU に戻す
-                self.model.to(device)
+                # 元のデバイスに戻す
+                self.model.to(original_device)
+                pass
 
         avg_loss = total_loss / total_tokens
         return avg_loss
