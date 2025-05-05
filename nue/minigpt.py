@@ -54,7 +54,7 @@ class SelfAttention(nn.Module):
         # x: [B, T, D]
         B, T, _ = x.shape
         # project q, k, v
-        qkv = self.qkv(x).view(B, T, 3, self.n_heads, self.head_dim)
+        qkv = self.qkv(x).contiguous().view(B, T, 3, self.n_heads, self.head_dim)
 
         q, k, v = qkv.unbind(dim=2)  # each [B, T, H, D]
         q, k, v = (t.transpose(1, 2) for t in (q, k, v))  # [B, H, T, D]
@@ -87,7 +87,7 @@ class SelfAttention(nn.Module):
             k,
             v,
             attn_mask=attn_mask,
-            dropout_p=self.dropout,
+            dropout_p=self.dropout if self.training else 0.0,
             is_causal=False,
         )
 

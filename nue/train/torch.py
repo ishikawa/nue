@@ -80,27 +80,35 @@ class PyTorchTrainer(BaseTrainer):
         total_tokens = 0
 
         with torch.no_grad():
-            for batch in dataloader:
-                input_ids = batch["input_ids"].to(device)
-                attention_mask = batch["attention_mask"].to(device)
-                labels = batch["labels"].to(device)
+            try:
+                # NOTE: MPS BUG? MPS Backend だと推論時に NaN が出ることがあるので、CPU で推論する
+                cpu = torch.device("cpu")
+                cpu_model = self.model.to(cpu)
 
-                logits = self.model(
-                    input_ids,
-                    attention_mask=attention_mask,
-                )
+                for batch in dataloader:
+                    input_ids = batch["input_ids"].to(cpu)
+                    attention_mask = batch["attention_mask"].to(cpu)
+                    labels = batch["labels"].to(cpu)
 
-                loss = criterion(
-                    logits.view(-1, self.model.cfg.vocab_size),
-                    labels.view(-1),
-                )
+                    logits = cpu_model(
+                        input_ids,
+                        attention_mask=attention_mask,
+                    )
 
-                num_tokens = (labels != IGNORE).sum().item()
-                total_loss += loss.item() * num_tokens
-                total_tokens += num_tokens
+                    loss = criterion(
+                        logits.view(-1, self.model.cfg.vocab_size),
+                        labels.view(-1),
+                    )
 
-                if max_tokens is not None and total_tokens >= max_tokens:
-                    break
+                    num_tokens = (labels != IGNORE).sum().item()
+                    total_loss += loss.item() * num_tokens
+                    total_tokens += num_tokens
+
+                    if max_tokens is not None and total_tokens >= max_tokens:
+                        break
+            finally:
+                # GPU に戻す
+                self.model.to(device)
 
         avg_loss = total_loss / total_tokens
         return avg_loss
@@ -124,7 +132,7 @@ class PyTorchTrainer(BaseTrainer):
         # --------- 2) Minimal GPT 初期化 ---------
         click.secho("[2/7] Initialize Minimal GPT", fg="green", bold=True)
 
-        model = MinimalGPT(self.config).to(torch.float32).to(device)
+        model = MinimalGPT(self.config).to(torch.bfloat16).to(device)
         model.apply(init_weights)
 
         self.model = model
