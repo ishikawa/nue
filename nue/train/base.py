@@ -21,6 +21,7 @@ class TrainingOptions:
     mlp_ratio: int
     seed: int
     lr: float
+    max_warmup_steps: int
     log_interval: int
     save_interval: int
     model_dir: str

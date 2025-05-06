@@ -186,9 +186,7 @@ class PyTorchTrainer:
         # len(dataset) はチャンク化後の訓練データセットのサンプル数
         num_training_steps_per_epoch = math.ceil(len(dataset) / options.batch_size)
         num_training_steps = num_training_steps_per_epoch * options.n_epochs
-
-        # ウォームアップステップ数: 1エポックあたりのステップ数の5%または5000
-        num_warmup_steps = int(min(num_training_steps * 0.05, 5000))
+        num_warmup_steps = int(min(num_training_steps * 0.05, options.max_warmup_steps))
 
         click.secho(
             f"Estimated total steps: {num_training_steps}, Warmup steps: {num_warmup_steps}",

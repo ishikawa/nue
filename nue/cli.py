@@ -113,6 +113,21 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     type=float,
     help="Learning rate",
 )
+@click.option(
+    "--max-warmup-steps",
+    "max_warmup_steps",
+    default=5_000,
+    type=int,
+    help="Maximum number of warmup steps",
+)
+@click.option("--seed", "seed", default=4649, type=int, help="Random seed")
+@click.option(
+    "--output-path",
+    "output_path",
+    default=str(BUILD_DIR / "_train"),
+    type=click.Path(file_okay=False, dir_okay=True, exists=False),
+    help="Output directory path for the trained model",
+)
 @click.option("--seed", "seed", default=4649, type=int, help="Random seed")
 @click.option(
     "--output-path",
@@ -168,6 +183,7 @@ def train_command(
     mlp_ratio: int,
     seed: int,
     lr: float,
+    max_warmup_steps: int,
     log_interval: int,
     save_interval: int,
     output_path: str,
@@ -209,6 +225,7 @@ def train_command(
             log_interval=log_interval,
             save_interval=save_interval,
             override_data_size=override_data_size,
+            max_warmup_steps=max_warmup_steps,
         )
 
         training_session = TrainingSession(
