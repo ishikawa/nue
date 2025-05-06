@@ -50,6 +50,10 @@ $ poetry run nue train-tokenizer
 poetry run nue train
 ```
 
+## License
+
+Apache License 2.0
+
 ## References
 
 Excellent articles and papers that I've read:
