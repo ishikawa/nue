@@ -4,7 +4,7 @@
 
 > Homebrew small-scale LLM based on GPT-2
 
-I'd like to gain practical experience with transformers, particularly by understanding their architecture and real-world applications, with a focus on small-scale LLMs. To achieve this, I decided to create _a tiny LLM_. First, I plan to study [excellent articles and papers](#References) to understand the basic concepts and architecture. Next, I will build and improve _my own GPT model_. My goal is to integrate it into web applications, games, and iOS apps that interest me.
+I'd like to gain practical experience with transformers, particularly by understanding their architecture and real-world applications, with a focus on small-scale LLMs. To achieve this, I decided to create _a tiny LLM_. My goal is to integrate it into web applications, games, and iOS apps that interest me.
 
 ## Goal
 
@@ -12,31 +12,21 @@ Build a small language model that generates grammatically correct sentences.
 
 ## Philosophy
 
-Keep it simple.
+Keep it simple, but not simplistic.
 
-## Approach
-
-### Dataset
-
-- 日本語と英語のみに絞る
-- 初期の事前学習には生成データを使わない
-  - ライセンス的に不明瞭な点が多い
-- 主なデータソース
-  - Wikipedia
-  - Public-Domain の書籍データ
+## Dataset
 
 | 名前                                                                              | ライセンス                                                            | 備考                                                                                                          |
 | --------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | [Wikimedia Wikipedia](https://huggingface.co/datasets/wikimedia/wikipedia)        | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/)       |                                                                                                               |
 | [livedoor ニュースコーパス](https://www.rondhuit.com/download.html#news%20corpus) | [CC BY-ND 2.1 JP](https://creativecommons.org/licenses/by-nd/2.1/jp/) | データソースは [llm-book/livedoor-news-corpus](https://huggingface.co/datasets/llm-book/livedoor-news-corpus) |
 
-### Tokenizer
+## Tokenizer
 
-- 日英のコーパスを用いて SentencePiece + Unigram で学習
-  - `byte_fallback=True` で OOV (語彙外) 回避
+日英のコーパスを用いて SentencePiece + Unigram で学習します。
+
+- `byte_fallback=True` で OOV (語彙外) 回避
 - `vocab_size` は 32,000
-  - 日常語・専門語・語尾・助詞などを自然に分割できる
-  - 未知語対応力、学習安定性、パラメータサイズもバランスが良い
 
 (1) コーパスを生成
 
@@ -54,7 +44,15 @@ $ poetry run nue build-corpus
 $ poetry run nue train-tokenizer
 ```
 
+## Training
+
+```
+poetry run nue train
+```
+
 ## References
+
+Excellent articles and papers that I've read:
 
 - [Language Models are Unsupervised Multitask Learners](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
 - [GPT in 60 Lines of NumPy | Jay Mody](https://jaykmody.com/blog/gpt-from-scratch/)
