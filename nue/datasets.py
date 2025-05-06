@@ -25,6 +25,7 @@ class DatasetConfig:
     # 学習用の split
     train_split: str
     name: Optional[str] = None
+    trust_remote_code: bool = False
 
 
 DATASET_LIST = [
@@ -37,6 +38,7 @@ DATASET_LIST = [
         content_column="text",
         tokenizer_split="train[:20%]",
         train_split="train",
+        trust_remote_code=False,
     ),
     DatasetConfig(
         path="wikimedia/wikipedia",
@@ -45,6 +47,7 @@ DATASET_LIST = [
         content_column="text",
         tokenizer_split="train[:10%]",
         train_split="train[:30%]",
+        trust_remote_code=False,
     ),
     # livedoor ニュースコーパス
     # https://www.rondhuit.com/download.html
@@ -54,5 +57,6 @@ DATASET_LIST = [
         content_column="content",
         tokenizer_split="train",
         train_split="train",
+        trust_remote_code=True,
     ),
 ]

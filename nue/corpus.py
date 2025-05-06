@@ -45,6 +45,7 @@ def __build_corpus_line() -> Generator[str, None, None]:
             config.name,
             split=config.tokenizer_split,
             cache_dir=str(DATASET_CACHE_DIR),
+            trust_remote_code=config.trust_remote_code,
         )
 
         if config.lang not in num_lines_by_lang:

@@ -215,16 +215,16 @@ class PyTorchTrainer:
                     split = f"{m.group(1)}[:{override_data_size}]"
                 else:
                     split = f"{split}[:{override_data_size}]"
-                # print(f"Overriding split: {split}")
 
             dataset = load_dataset(
                 dataset_config.path,
                 dataset_config.name,
                 split=split,
                 cache_dir=str(DATASET_CACHE_DIR),
+                trust_remote_code=dataset_config.trust_remote_code,
             )
 
-            # Tokenize (batched & parallel)
+            # Tokenize
             mapped_dataset = dataset.map(
                 map_tokenize_to_chunk_lists,
                 fn_kwargs={
@@ -255,27 +255,24 @@ class PyTorchTrainer:
                 }
             )
 
-            # フラット化を行う関数 (map(batched=True)で使う)
             def flatten_batch(examples: dict[str, list]) -> dict[str, list]:
                 flat_input_ids = []
                 flat_num_tokens = []
-                # バッチ内の各サンプル (チャンクのリストを持っている) をループ
+
                 for i in range(len(examples["input_ids_chunks"])):
-                    # 各サンプル内のチャンクをループ
                     for j in range(len(examples["input_ids_chunks"][i])):
                         flat_input_ids.append(examples["input_ids_chunks"][i][j])
                         flat_num_tokens.append(examples["num_tokens_chunks"][i][j])
-                # 出力行数は入力行数と異なる可能性がある
+
                 return {"input_ids": flat_input_ids, "num_tokens": flat_num_tokens}
 
-            # map を使ったフラット化 (num_proc > 1 で試行)
-            # この map は入力と出力の行数が異なるため、エラーが出る可能性がある
+            # リストをフラット化する
             flat_dataset = filtered_dataset.map(
                 flatten_batch,
                 batched=True,
                 # フラット化前のネストしたカラムを削除
                 remove_columns=["input_ids_chunks", "num_tokens_chunks"],
-                # 新しいスキーマを指定 (重要)
+                # 新しいスキーマを指定
                 features=new_features,
                 num_proc=os.cpu_count(),
                 desc=f"Flattening chunks for '{dataset_config.name}' (parallel)",
@@ -290,10 +287,9 @@ class PyTorchTrainer:
             processed_dataset = cast(Dataset, flat_dataset)
             datasets_list.append(processed_dataset)
 
-        # 連結 (変更なし)
         final_dataset = concatenate_datasets(datasets_list)
 
-        # 合計トークン数計算 (num_tokens カラムを使用)
+        # 合計トークン数
         if "num_tokens" not in final_dataset.column_names:
             print(
                 colored(
@@ -301,15 +297,12 @@ class PyTorchTrainer:
                     "yellow",
                 )
             )
-            # この map は比較的軽量なので並列化しても問題ないことが多い
             final_dataset = final_dataset.map(
                 lambda x: {"num_tokens": len(x["input_ids"])}, num_proc=os.cpu_count()
             )
         self.total_tokens = sum(final_dataset["num_tokens"])
 
-        # フォーマット設定 (input_ids のみ torch テンソルにする)
         final_dataset.set_format(type="torch", columns=["input_ids"])
-
         return final_dataset
 
     def train(
@@ -359,8 +352,6 @@ class PyTorchTrainer:
         dataset = train_and_test_datasets["train"]
 
         # DataLoader
-
-        # DataLoaderを作成
         loader = DataLoader(
             dataset,  # type: ignore
             batch_size=options.batch_size,
@@ -385,6 +376,7 @@ class PyTorchTrainer:
 
         # --------- 4) Optimizer & Scheduler ---------
         click.secho("[4/7] Prepare optimizer & scheduler", fg="green", bold=True)
+
         # NOTE: Adam だと速く収束するが鋭い谷に落ちやすい
         # optimizer = optim.Adam(model.parameters(), lr=lr)
         # NOTE: SGD は安定性を増すが、データ量が少ない時は収束しなかった
@@ -398,29 +390,29 @@ class PyTorchTrainer:
         # --- スケジューラーの設定 ---
         # おおよその総学習ステップ数を計算 (エポック数 x 1エポックあたりのステップ数)
         # len(dataset) はチャンク化後の訓練データセットのサンプル数
-        num_training_steps = (
-            math.ceil(len(dataset) / options.batch_size) * options.n_epochs
-        )
+        num_training_steps_per_epoch = math.ceil(len(dataset) / options.batch_size)
+        num_training_steps = num_training_steps_per_epoch * options.n_epochs
 
-        # ウォームアップステップ数を設定 (例: 総ステップ数の 5% や、固定値 500 など)
-        # 5%ウォームアップの場合 (調整可能)
-        num_warmup_steps = int(min(num_training_steps * 0.05, 500))
+        # ウォームアップステップ数: 1エポックあたりのステップ数の5%または5000
+        num_warmup_steps = int(min(num_training_steps_per_epoch * 0.05, 5000))
 
         click.secho(
-            f"Total training steps: {num_training_steps}, Warmup steps: {num_warmup_steps}",
+            f"Estimated total steps: {num_training_steps}, Warmup steps: {num_warmup_steps}",
             fg="cyan",
         )
 
-        # lr_lambda 関数の修正案 (0除算防止とエッジケース対応の強化)
+        # 学習率スケジューラー: 線形ウォームアップ後、余りを余弦減衰
         def lr_lambda(
             current_step: int, num_warmup_steps: int, num_training_steps: int
         ):
             # current_step が総学習ステップ数を超えたら、学習率は0
             if current_step >= num_training_steps:
                 return 0.0
+
             # 線形ウォームアップ
             if num_warmup_steps > 0 and current_step < num_warmup_steps:
                 return float(current_step) / float(num_warmup_steps)
+
             # ウォームアップがないか、ウォームアップ期間終了後のコサイン減衰
             # num_training_steps と num_warmup_steps が同じ場合（つまりウォームアップのみで減衰なし、またはステップ数が不足）を考慮
             decay_steps = num_training_steps - num_warmup_steps
