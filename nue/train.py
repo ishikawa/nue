@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import dataclasses
 import json
 import math
@@ -18,7 +19,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Optional, cast
+from typing import Iterable, Optional, cast
 
 import click
 import torch
@@ -34,7 +35,7 @@ from sentencepiece import SentencePieceProcessor
 from termcolor import colored
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from yaspin import yaspin
 from yaspin.core import Yaspin
@@ -389,22 +390,54 @@ class PyTorchTrainer:
         # NOTE: SGD は安定性を増すが、データ量が少ない時は収束しなかった
         optimizer = AdamW(
             model.parameters(),
-            lr=3e-4,
+            lr=options.lr,
             # 過学習防止のため正則化
             weight_decay=0.01,
         )
 
-        # Define learning rate scheduler
-        # Reduce learning rate when loss plateaus (patience=5)
-        # NOTE: 一般的にはコザイン減衰のスケジューラーが使われているらしい
-        scheduler = ReduceLROnPlateau(
+        # --- スケジューラーの設定 ---
+        # おおよその総学習ステップ数を計算 (エポック数 x 1エポックあたりのステップ数)
+        # len(dataset) はチャンク化後の訓練データセットのサンプル数
+        num_training_steps = (
+            math.ceil(len(dataset) / options.batch_size) * options.n_epochs
+        )
+
+        # ウォームアップステップ数を設定 (例: 総ステップ数の 5% や、固定値 500 など)
+        # 5%ウォームアップの場合 (調整可能)
+        num_warmup_steps = int(min(num_training_steps * 0.05, 500))
+
+        click.secho(
+            f"Total training steps: {num_training_steps}, Warmup steps: {num_warmup_steps}",
+            fg="cyan",
+        )
+
+        # lr_lambda 関数の修正案 (0除算防止とエッジケース対応の強化)
+        def lr_lambda(
+            current_step: int, num_warmup_steps: int, num_training_steps: int
+        ):
+            # current_step が総学習ステップ数を超えたら、学習率は0
+            if current_step >= num_training_steps:
+                return 0.0
+            # 線形ウォームアップ
+            if num_warmup_steps > 0 and current_step < num_warmup_steps:
+                return float(current_step) / float(num_warmup_steps)
+            # ウォームアップがないか、ウォームアップ期間終了後のコサイン減衰
+            # num_training_steps と num_warmup_steps が同じ場合（つまりウォームアップのみで減衰なし、またはステップ数が不足）を考慮
+            decay_steps = num_training_steps - num_warmup_steps
+            if (
+                decay_steps <= 0
+            ):  # 減衰期間がない、または計算がおかしい場合は、ウォームアップ後の最大学習率を維持するか、0にする
+                return 1.0  # ここは状況によるが、ウォームアップのみの場合は1.0を維持、あるいはエラーを出した方が良い場合も
+                # もし num_warmup_steps == num_training_steps なら、最後のステップなので 0 に近い値を返すのが適切か
+
+            progress = float(current_step - num_warmup_steps) / float(decay_steps)
+            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+        # スケジューラーの初期化時に num_warmup_steps と num_training_steps を渡すように変更
+        # scheduler = LambdaLR(optimizer, lr_lambda) # 元の呼び出し方
+        scheduler = LambdaLR(
             optimizer,
-            mode="min",
-            factor=0.5,
-            min_lr=1e-4,
-            patience=options.lr_scheduler_patience,
-            threshold=1e-3,  # relative 0.1 % 下降を許容
-            threshold_mode="rel",
+            lambda step: lr_lambda(step, num_warmup_steps, num_training_steps),
         )
 
         criterion = torch.nn.CrossEntropyLoss(
@@ -579,19 +612,22 @@ class PyTorchTrainer:
                         # MPS では GradScaler 要らず。そのまま backward → step
                         # NOTE: MPS ではほとんどパフォーマンスの違いがないためコメントアウト
 
-                        # 1. 勾配の初期化
-                        optimizer.zero_grad()
-                        # 2. 勾配の計算
+                        # 勾配の計算
                         loss.backward()
 
                         if measure_time:
                             torch.mps.synchronize()
                             t3 = time.perf_counter()
 
-                        # 3. 勾配のクリッピング
+                        # 勾配のクリッピング
                         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                        # 4. パラメータの更新
+
+                        # パラメータの更新
                         optimizer.step()
+                        scheduler.step()
+
+                        # 勾配の初期化
+                        optimizer.zero_grad()
 
                         if measure_time:
                             torch.mps.synchronize()
@@ -611,13 +647,23 @@ class PyTorchTrainer:
                             # 最低限安定して計測できるように 50,000 トークンまで
                             try:
                                 model.eval()
+
+                                # 評価
                                 val_loss = self.evaluate(
                                     validation_loader, criterion, max_tokens=50_000
                                 )
+
+                                # サンプル生成
+                                with torch.no_grad():
+                                    for text in self.generate_samples():
+                                        spinner.write(
+                                            colored(
+                                                f"  SAMPLE: {text}",
+                                                "yellow",
+                                            )
+                                        )
                             finally:
                                 model.train()
-
-                            scheduler.step(val_loss)
 
                             # 平均 loss を計算
                             avg_loss = total_loss / options.log_interval
@@ -661,25 +707,22 @@ class PyTorchTrainer:
                     finally:
                         i_step += 1
 
-                # エポック終わりのサンプル生成
+                # エポック終わりのサンプル生成と評価
                 try:
                     model.eval()
 
-                    with torch.no_grad():
-                        prompt = "昔々"
-                        ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
-                        idx = torch.tensor([ids], dtype=torch.long).to(device)
-                        out = model._generate(idx, max_new_tokens=50)[0].cpu().tolist()
-
-                        spinner.write(
-                            colored(
-                                f"  Sample generation: {TOKENIZER.DecodeIds(out)}",
-                                "yellow",
-                            )
-                        )
-
+                    # 評価
                     val_loss = self.evaluate(validation_loader, criterion)
-                    scheduler.step(val_loss)
+
+                    # サンプル生成
+                    with torch.no_grad():
+                        for text in self.generate_samples():
+                            spinner.write(
+                                colored(
+                                    f"  Sample generation: {text}",
+                                    "yellow",
+                                )
+                            )
                 finally:
                     model.train()
 
@@ -730,6 +773,10 @@ class PyTorchTrainer:
         out = self.model._generate(idx, max_new_tokens=max_new_length)[0].cpu().tolist()
 
         return TOKENIZER.DecodeIds(out)
+
+    def generate_samples(self) -> Iterable[str]:
+        for prompt in ["富士山は", "東京の", "Alan Turing is "]:
+            yield self.generate_text(prompt, max_new_length=50)
 
     def evaluate(
         self,

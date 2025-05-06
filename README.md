@@ -4,6 +4,9 @@
 
 > The homebrew-scale LLM 🐵🦝🐯🐍
 
+> [!WARNING]
+> Work in progress — nothing useful here yet.
+
 I'd like to gain practical experience with transformers, particularly by understanding their architecture and real-world applications, with a focus on small-scale LLMs. To achieve this, I decided to create _a tiny LLM_. My goal is to integrate it into web applications, games, and iOS apps that interest me.
 
 ## Goal
@@ -67,4 +70,5 @@ Excellent articles and papers that I've read:
 - [Language Models are Unsupervised Multitask Learners](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
 - [GPT in 60 Lines of NumPy | Jay Mody](https://jaykmody.com/blog/gpt-from-scratch/)
 - [Reproducing GPT-2 (124M) in llm.c in 90 minutes for $20 · karpathy/llm.c · Discussion #481](https://github.com/karpathy/llm.c/discussions/481)
+- [Training Compute-Optimal Large Language Models](https://arxiv.org/abs/2203.15556) a.k.a. _"Chinchilla Scaling Law"_
 - [Physics of Language Models](https://physics.allen-zhu.com/home)

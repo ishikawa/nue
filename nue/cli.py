@@ -101,10 +101,10 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     help="Training data chunk overlap length",
 )
 @click.option(
-    "--n-embed", "n_embed", default=512, type=int, help="Number of embeddings"
+    "--n-embed", "n_embed", default=896, type=int, help="Number of embeddings"
 )
-@click.option("--n-heads", "n_heads", default=8, type=int, help="Number of heads")
-@click.option("--n-layers", "n_layers", default=6, type=int, help="Number of layers")
+@click.option("--n-heads", "n_heads", default=14, type=int, help="Number of heads")
+@click.option("--n-layers", "n_layers", default=12, type=int, help="Number of layers")
 @click.option("--mlp-ratio", "mlp_ratio", default=4, type=int, help="MLP ratio")
 @click.option(
     "--lr",
