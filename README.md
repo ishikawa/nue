@@ -2,7 +2,7 @@
 
 ![workflow](https://github.com/ishikawa/nue/actions/workflows/nue.yml/badge.svg)
 
-> Homebrew-scale LLM 🍻
+> The homebrew-scale LLM 🐵🦝🐯🐍
 
 I'd like to gain practical experience with transformers, particularly by understanding their architecture and real-world applications, with a focus on small-scale LLMs. To achieve this, I decided to create _a tiny LLM_. My goal is to integrate it into web applications, games, and iOS apps that interest me.
 
@@ -53,6 +53,12 @@ poetry run nue train
 ## License
 
 Apache License 2.0
+
+## Name origin 🐵🦝🐯🐍
+
+The name Nue (鵺, pronounced "noo-eh") originates from Japanese folklore, referring to a mythical creature with the head of a monkey, body of a tanuki (raccoon dog), legs of a tiger, and tail of a snake.
+
+Inspired by this creature, this project serves as a personal exploration into building language models—combining newly-learned, diverse techniques into one cohesive yet eclectic model. Additionally, "Nue" can be read similarly to "new," symbolizing this as a new, homebrew-scale LLM crafted from scratch.
 
 ## References
 

@@ -1,7 +1,7 @@
 [project]
 name = "nue"
 version = "0.1.0"
-description = "Homebrew-scale LLM 🍻"
+description = "The homebrew-scale LLM 🐵🦝🐯🐍"
 authors = [
     {name = "Takanori Ishikawa",email = "takanori.ishikawa@gmail.com"}
 ]
