@@ -25,9 +25,10 @@ Keep it simple.
   - Wikipedia
   - Public-Domain の書籍データ
 
-| 名前                                                                       | ライセンス                                                      | 備考 |
-| -------------------------------------------------------------------------- | --------------------------------------------------------------- | ---- |
-| [Wikimedia Wikipedia](https://huggingface.co/datasets/wikimedia/wikipedia) | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |      |
+| 名前                                                                              | ライセンス                                                            | 備考                                                                                                          |
+| --------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| [Wikimedia Wikipedia](https://huggingface.co/datasets/wikimedia/wikipedia)        | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/)       |                                                                                                               |
+| [livedoor ニュースコーパス](https://www.rondhuit.com/download.html#news%20corpus) | [CC BY-ND 2.1 JP](https://creativecommons.org/licenses/by-nd/2.1/jp/) | データソースは [llm-book/livedoor-news-corpus](https://huggingface.co/datasets/llm-book/livedoor-news-corpus) |
 
 ### Tokenizer
 
