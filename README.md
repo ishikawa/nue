@@ -2,7 +2,7 @@
 
 ![workflow](https://github.com/ishikawa/nue/actions/workflows/nue.yml/badge.svg)
 
-> Homebrew small-scale LLM based on GPT-2
+> Homebrew-scale LLM 🍻
 
 I'd like to gain practical experience with transformers, particularly by understanding their architecture and real-world applications, with a focus on small-scale LLMs. To achieve this, I decided to create _a tiny LLM_. My goal is to integrate it into web applications, games, and iOS apps that interest me.
 
