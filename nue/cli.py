@@ -148,6 +148,13 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     default=100,
     help="Number of training steps between saving model checkpoints.",
 )
+@click.option(
+    "--override-data-size",
+    "override_data_size",
+    type=str,
+    default=None,
+    help="Override data size for training. (e.g. 10%')",
+)
 # Options below are for debugging and not saved in training session
 @click.option(
     "--measure-time",
@@ -156,13 +163,6 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     default=False,
     is_flag=True,
     help="Measure time for each step.",
-)
-@click.option(
-    "--override-data-size",
-    "override_data_size",
-    type=str,
-    default=None,
-    help="Override data size for training. (e.g. 10%')",
 )
 def train_command(
     n_epochs: int,
@@ -217,6 +217,7 @@ def train_command(
             model_dir=model_dir,
             log_interval=log_interval,
             save_interval=save_interval,
+            override_data_size=override_data_size,
         )
 
         training_session = TrainingSession(
@@ -244,7 +245,6 @@ def train_command(
     trainer.train(
         training_session,
         measure_time=measure_time,
-        override_data_size=override_data_size,
     )
 
 

@@ -16,22 +16,11 @@ import dataclasses
 import json
 import math
 import os
-import re
 import time
-from dataclasses import dataclass
-from typing import Iterable, Optional, cast
+from typing import Iterable, Optional
 
 import click
 import torch
-from datasets import (
-    Dataset,
-    Features,
-    Sequence,
-    Value,
-    concatenate_datasets,
-    load_dataset,
-)
-from sentencepiece import SentencePieceProcessor
 from termcolor import colored
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
@@ -40,20 +29,11 @@ from torch.utils.data import DataLoader
 from yaspin import yaspin
 from yaspin.core import Yaspin
 
-from nue.common import BUILD_DIR, DATASET_CACHE_DIR
-from nue.datasets import DATASET_LIST
 from nue.gpt import GPTConfig, MinimalGPT, init_weights
+from nue.train.dataset import load_train_dataset
 
-# グローバルにロードしておくと子プロセスが継承できる
-TOKENIZER = SentencePieceProcessor()
-TOKENIZER.Load(str(BUILD_DIR / "tokenizer.model"))
-
-PAD_ID: int = TOKENIZER.pad_id()  # 例: 0
-IGNORE = -100  # CrossEntropyLoss が無視する値
-
-assert PAD_ID is not None
-assert isinstance(PAD_ID, int)
-assert PAD_ID >= 0, "PAD_ID must be non-negative"
+from .base import Epoch, TrainingOptions, TrainingSession
+from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
 
 # NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出ることがある
 #
@@ -64,117 +44,29 @@ assert PAD_ID >= 0, "PAD_ID must be non-negative"
 CPU_EVALUATION_ON_MPS_BACKEND = False
 
 
-@dataclass(frozen=True)
-class Epoch:
-    epoch: int
-    loss: float
-
-
-@dataclass(frozen=True)
-class TrainingOptions:
-    n_epochs: int
-    batch_size: int
-    ctx_len: int
-    # 学習データセットのチャンク間のオーバーラップ長
-    chunk_overlap_len: int
-    n_embed: int
-    n_heads: int
-    n_layers: int
-    mlp_ratio: int
-    seed: int
-    lr: float
-    lr_scheduler_patience: int
-    log_interval: int
-    save_interval: int
-    model_dir: str
-
-
-@dataclass
-class TrainingSession:
-    epochs: list[Epoch]
-    options: TrainingOptions
-
-
-def tokenize_and_chunk(
-    text: str, tokenizer: SentencePieceProcessor, ctx_len: int, overlap_len: int
-) -> list[list[int]]:
-    """テキストをトークナイズし、オーバーラップ付きのチャンクに分割する"""
-    tokens = tokenizer.EncodeAsIds(text)
-
-    if not tokens:
-        return []
-
-    # トークン数がコンテキスト長より短い場合は、そのまま単一のチャンクとして返す
-    if len(tokens) <= ctx_len:
-        return [tokens]
-
-    chunks = []
-    stride = ctx_len - overlap_len
-
-    if stride <= 0:
-        raise ValueError(
-            f"overlap_len ({overlap_len}) must be smaller than ctx_len ({ctx_len})"
-        )
-
-    for i in range(0, len(tokens), stride):
-        chunk = tokens[i : i + ctx_len]
-        if not chunk:  # まれにループの最後で空になる場合
-            continue
-
-        # チャンクを追加（最後のチャンクがctx_len未満でもOK）
-        chunks.append(chunk)
-
-        # 次のチャンクの開始位置が元のトークン長を超える場合、ループを終了
-        if i + stride >= len(tokens):
-            break
-
-    # 念の為、チャンクが生成されなかった場合のフォールバック
-    if not chunks and tokens:
-        chunks.append(tokens[:ctx_len])
-
-    return chunks
-
-
-# --- 第1段階の map で使用する関数 ---
-def map_tokenize_to_chunk_lists(
-    examples: dict[str, list], column: str, ctx_len: int, overlap_len: int
-) -> dict[str, list]:
-    """
-    各テキストをチャンク化し、チャンクのリストと、各チャンクの長さのリストを返す。
-    出力の行数は入力と同じ。
-    """
-    output = {"input_ids_chunks": [], "num_tokens_chunks": []}
-    # TOKENIZER はグローバル変数から参照
-    for text in examples[column]:
-        chunks = tokenize_and_chunk(text, TOKENIZER, ctx_len, overlap_len)
-        output["input_ids_chunks"].append(chunks)
-        output["num_tokens_chunks"].append([len(c) for c in chunks])
-    return output
-
-
 def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     # 1) 各シーケンス
     seqs = [b["input_ids"] for b in batch]
 
     # 2) 右パディング
-    padded = pad_sequence(seqs, batch_first=True, padding_value=PAD_ID)  # [B, T]
+    padded = pad_sequence(seqs, batch_first=True, padding_value=PAD_TOKEN_ID)  # [B, T]
 
     # 3) attention_mask （1=実トークン、0=PAD）
-    attn_mask = (padded != PAD_ID).long()  # [B, T]
+    attn_mask = (padded != PAD_TOKEN_ID).long()  # [B, T]
 
     # 4) Labels の作成
     # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
     # - パディング部分は損失計算から除外する必要がある
 
     # 全ての要素を IGNORE (損失計算で無視される値) で初期化
-    labels = torch.full_like(padded, IGNORE)
+    labels = torch.full_like(padded, IGNORE_TOKEN_ID)
 
     # input_ids を左シフトして labels に代入することで、
     # labels[i] <- input_ids[i+1]
     labels[:, :-1] = padded[:, 1:]
 
     # ラベルが PAD_ID となっている箇所を IGNORE にする
-    labels[labels == PAD_ID] = IGNORE
+    labels[labels == PAD_TOKEN_ID] = IGNORE_TOKEN_ID
 
     return {
         "input_ids": padded,
@@ -204,112 +96,10 @@ class PyTorchTrainer:
             mlp_ratio=options.mlp_ratio,
         )
 
-    def load_dataset(self, *, override_data_size: Optional[str] = None) -> Dataset:
-        datasets_list: list[Dataset] = []
-
-        for dataset_config in DATASET_LIST:
-            split = dataset_config.train_split
-
-            if override_data_size is not None:
-                if m := re.match(r"^(\w+)", split):
-                    split = f"{m.group(1)}[:{override_data_size}]"
-                else:
-                    split = f"{split}[:{override_data_size}]"
-
-            dataset = load_dataset(
-                dataset_config.path,
-                dataset_config.name,
-                split=split,
-                cache_dir=str(DATASET_CACHE_DIR),
-                trust_remote_code=dataset_config.trust_remote_code,
-            )
-
-            # Tokenize
-            mapped_dataset = dataset.map(
-                map_tokenize_to_chunk_lists,
-                fn_kwargs={
-                    "column": dataset_config.content_column,
-                    "ctx_len": self.config.ctx_len,
-                    "overlap_len": self.options.chunk_overlap_len,
-                },
-                # 元のカラムを削除
-                remove_columns=dataset.column_names,  # type: ignore
-                batched=True,
-                num_proc=os.cpu_count(),  # type: ignore
-                desc=f"Tokenizing and chunking dataset for '{dataset_config.name}'",  # type: ignore
-            )
-
-            # チャンクリストが空の行を除外 (元のテキストが空など)
-            filtered_dataset = mapped_dataset.filter(
-                lambda example: len(example["input_ids_chunks"]) > 0,
-                num_proc=os.cpu_count(),
-                desc=f"Filtering empty rows for '{dataset_config.name}'",
-            )
-
-            # --- 第2段階: フラット化 ---
-            # フラット化後のデータセットのスキーマ (特徴量) を定義
-            new_features = Features(
-                {
-                    "input_ids": Sequence(feature=Value(dtype="int32")),
-                    "num_tokens": Value(dtype="int32"),
-                }
-            )
-
-            def flatten_batch(examples: dict[str, list]) -> dict[str, list]:
-                flat_input_ids = []
-                flat_num_tokens = []
-
-                for i in range(len(examples["input_ids_chunks"])):
-                    for j in range(len(examples["input_ids_chunks"][i])):
-                        flat_input_ids.append(examples["input_ids_chunks"][i][j])
-                        flat_num_tokens.append(examples["num_tokens_chunks"][i][j])
-
-                return {"input_ids": flat_input_ids, "num_tokens": flat_num_tokens}
-
-            # リストをフラット化する
-            flat_dataset = filtered_dataset.map(
-                flatten_batch,
-                batched=True,
-                # フラット化前のネストしたカラムを削除
-                remove_columns=["input_ids_chunks", "num_tokens_chunks"],
-                # 新しいスキーマを指定
-                features=new_features,
-                num_proc=os.cpu_count(),
-                desc=f"Flattening chunks for '{dataset_config.name}' (parallel)",
-            )
-            print(
-                colored(
-                    f"Successfully flattened '{dataset_config.name}' using map(batched=True, num_proc={os.cpu_count()})",
-                    "green",
-                )
-            )
-
-            processed_dataset = cast(Dataset, flat_dataset)
-            datasets_list.append(processed_dataset)
-
-        final_dataset = concatenate_datasets(datasets_list)
-
-        # 合計トークン数
-        if "num_tokens" not in final_dataset.column_names:
-            print(
-                colored(
-                    "Warning: 'num_tokens' column not found after flattening. Re-calculating.",
-                    "yellow",
-                )
-            )
-            final_dataset = final_dataset.map(
-                lambda x: {"num_tokens": len(x["input_ids"])}, num_proc=os.cpu_count()
-            )
-        self.total_tokens = sum(final_dataset["num_tokens"])
-
-        final_dataset.set_format(type="torch", columns=["input_ids"])
-        return final_dataset
-
     def train(
         self,
         session: TrainingSession,
         *,
-        override_data_size: Optional[str] = None,
         measure_time: bool = False,
     ) -> None:
         options = session.options
@@ -341,7 +131,11 @@ class PyTorchTrainer:
 
         # --------- 3) データセット準備 ---------
         click.secho("[3/7] Prepare dataset", fg="green", bold=True)
-        dataset = self.load_dataset(override_data_size=override_data_size)
+        dataset = load_train_dataset(
+            ctx_len=options.ctx_len,
+            chunk_overlap_len=options.chunk_overlap_len,
+            override_data_size=options.override_data_size,
+        )
 
         # 合計トークン数を計算
         total_tokens = sum(dataset["num_tokens"])
@@ -437,7 +231,7 @@ class PyTorchTrainer:
             # Label smoothing for better generalization
             label_smoothing=0.1,
             # Padding token ID
-            ignore_index=IGNORE,
+            ignore_index=IGNORE_TOKEN_ID,
         )
 
         # --------- 5) 前回の学習状態を復元 ---------
@@ -807,7 +601,7 @@ class PyTorchTrainer:
                         labels.view(-1),
                     )
 
-                    num_tokens = (labels != IGNORE).sum().item()
+                    num_tokens = (labels != IGNORE_TOKEN_ID).sum().item()
                     total_loss += loss.item() * num_tokens
                     total_tokens += num_tokens
 
@@ -839,4 +633,5 @@ def format_number_abbrev(n: int) -> str:
     elif n >= 1_000:
         return f"{n / 1_000:.1f}K"
     else:
+        return str(n)
         return str(n)
