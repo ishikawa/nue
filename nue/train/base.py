@@ -21,7 +21,6 @@ class TrainingOptions:
     mlp_ratio: int
     seed: int
     lr: float
-    lr_scheduler_patience: int
     log_interval: int
     save_interval: int
     model_dir: str

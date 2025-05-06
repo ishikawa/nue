@@ -113,13 +113,6 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     type=float,
     help="Learning rate",
 )
-@click.option(
-    "--lr-scheduler-patience",
-    "lr_scheduler_patience",
-    type=int,
-    default=3,
-    help="Patience for learning rate scheduler",
-)
 @click.option("--seed", "seed", default=4649, type=int, help="Random seed")
 @click.option(
     "--output-path",
@@ -175,7 +168,6 @@ def train_command(
     mlp_ratio: int,
     seed: int,
     lr: float,
-    lr_scheduler_patience: int,
     log_interval: int,
     save_interval: int,
     output_path: str,
@@ -212,7 +204,6 @@ def train_command(
             n_layers=n_layers,
             mlp_ratio=mlp_ratio,
             lr=lr,
-            lr_scheduler_patience=lr_scheduler_patience,
             seed=seed,
             model_dir=model_dir,
             log_interval=log_interval,
@@ -237,7 +228,7 @@ def train_command(
         + f"n_embed={training_options.n_embed}, n_heads={training_options.n_heads}, "
         + f"n_layers={training_options.n_layers}, mlp_ratio={training_options.mlp_ratio}, "
         + f"seed={training_options.seed}, "
-        + f"lr={training_options.lr}, lr_scheduler_patience={training_options.lr_scheduler_patience}",
+        + f"lr={training_options.lr}",
         fg="white",
     )
 
