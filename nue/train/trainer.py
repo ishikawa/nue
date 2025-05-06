@@ -102,6 +102,7 @@ class PyTorchTrainer:
         self,
         session: TrainingSession,
         *,
+        log_validation_max_tokens: int = 50_000,
         measure_time: bool = False,
     ) -> None:
         options = session.options
@@ -408,17 +409,17 @@ class PyTorchTrainer:
 
                         # Log training progress
                         if (i_step + 1) % options.log_interval == 0:
-                            # Evaluate on validation dataset
-                            # 最低限安定して計測できるように 50,000 トークンまで
                             try:
                                 model.eval()
 
-                                # 評価
+                                # Evaluate on validation dataset
                                 val_loss = self.evaluate(
-                                    validation_loader, criterion, max_tokens=50_000
+                                    validation_loader,
+                                    criterion,
+                                    max_tokens=log_validation_max_tokens,
                                 )
 
-                                # サンプル生成
+                                # Generate samples
                                 with torch.no_grad():
                                     for text in self.generate_samples():
                                         spinner.write(

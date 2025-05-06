@@ -172,6 +172,13 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     is_flag=True,
     help="Measure time for each step.",
 )
+@click.option(
+    "--log-validation-max-tokens",
+    "log_validation_max_tokens",
+    type=int,
+    default=50_000,
+    help="Maximum number of tokens to evaluate on validation dataset per log interval.",
+)
 def train_command(
     n_epochs: int,
     batch_size: int,
@@ -190,6 +197,7 @@ def train_command(
     model_dir: str | None = None,
     measure_time: bool = False,
     override_data_size: str | None = None,
+    log_validation_max_tokens: int = 50_000,
 ):
     from nue.train import PyTorchTrainer
 
@@ -253,6 +261,7 @@ def train_command(
     trainer.train(
         training_session,
         measure_time=measure_time,
+        log_validation_max_tokens=log_validation_max_tokens,
     )
 
 
