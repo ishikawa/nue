@@ -17,6 +17,7 @@ import json
 import math
 import os
 import time
+from contextlib import contextmanager
 from typing import Iterable, Optional
 
 import click
@@ -24,8 +25,8 @@ import torch
 from termcolor import colored
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
+from torchtune.training import get_cosine_schedule_with_warmup
 from yaspin import yaspin
 from yaspin.core import Yaspin
 
@@ -35,13 +36,13 @@ from nue.train.dataset import load_train_dataset
 from .base import Epoch, TrainingOptions, TrainingSession
 from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
 
-# NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出ることがある
+# NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出る
 #
 # [MPS] MultiheadAttention with masks and dropout produces NaNs #151667
 # https://github.com/pytorch/pytorch/issues/151667
 #
-# このフラグを True にすると、評価時は CPU で推論する
-CPU_EVALUATION_ON_MPS_BACKEND = False
+# このフラグを True にすると、MPS での評価時は CPU で推論する
+CPU_EVALUATION_ON_MPS_BACKEND = True
 
 
 def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
@@ -86,6 +87,7 @@ class PyTorchTrainer:
         options: TrainingOptions,
     ) -> None:
         self.options = options
+        self.device = detect_device()
 
         self.config = GPTConfig(
             vocab_size=TOKENIZER.vocab_size(),
@@ -108,13 +110,11 @@ class PyTorchTrainer:
         if options.seed is not None:
             torch.manual_seed(options.seed)
 
-        # --------- 1) デバイス設定 (MPS) ---------
-        click.secho("[1/7] Device setup", fg="green", bold=True)
-
-        device = detect_device()
+        # --------- 1) Configuration ---------
+        click.secho("[1/7] Configuration", fg="green", bold=True)
 
         click.secho(
-            f"vocab_size: {self.config.vocab_size}, device: {device}", fg="cyan"
+            f"vocab_size: {self.config.vocab_size}, device: {self.device}", fg="cyan"
         )
 
         # Save hyperparameters in JSON format
@@ -124,7 +124,7 @@ class PyTorchTrainer:
         # --------- 2) Minimal GPT 初期化 ---------
         click.secho("[2/7] Initialize Minimal GPT", fg="green", bold=True)
 
-        model = MinimalGPT(self.config).to(torch.bfloat16).to(device)
+        model = MinimalGPT(self.config).to(torch.bfloat16).to(self.device)
         model.apply(init_weights)
 
         self.model = model
@@ -188,42 +188,18 @@ class PyTorchTrainer:
         num_training_steps = num_training_steps_per_epoch * options.n_epochs
 
         # ウォームアップステップ数: 1エポックあたりのステップ数の5%または5000
-        num_warmup_steps = int(min(num_training_steps_per_epoch * 0.05, 5000))
+        num_warmup_steps = int(min(num_training_steps * 0.05, 5000))
 
         click.secho(
             f"Estimated total steps: {num_training_steps}, Warmup steps: {num_warmup_steps}",
             fg="cyan",
         )
 
-        # 学習率スケジューラー: 線形ウォームアップ後、余りを余弦減衰
-        def lr_lambda(
-            current_step: int, num_warmup_steps: int, num_training_steps: int
-        ):
-            # current_step が総学習ステップ数を超えたら、学習率は0
-            if current_step >= num_training_steps:
-                return 0.0
-
-            # 線形ウォームアップ
-            if num_warmup_steps > 0 and current_step < num_warmup_steps:
-                return float(current_step) / float(num_warmup_steps)
-
-            # ウォームアップがないか、ウォームアップ期間終了後のコサイン減衰
-            # num_training_steps と num_warmup_steps が同じ場合（つまりウォームアップのみで減衰なし、またはステップ数が不足）を考慮
-            decay_steps = num_training_steps - num_warmup_steps
-            if (
-                decay_steps <= 0
-            ):  # 減衰期間がない、または計算がおかしい場合は、ウォームアップ後の最大学習率を維持するか、0にする
-                return 1.0  # ここは状況によるが、ウォームアップのみの場合は1.0を維持、あるいはエラーを出した方が良い場合も
-                # もし num_warmup_steps == num_training_steps なら、最後のステップなので 0 に近い値を返すのが適切か
-
-            progress = float(current_step - num_warmup_steps) / float(decay_steps)
-            return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
-
-        # スケジューラーの初期化時に num_warmup_steps と num_training_steps を渡すように変更
-        # scheduler = LambdaLR(optimizer, lr_lambda) # 元の呼び出し方
-        scheduler = LambdaLR(
+        # 学習率スケジューラー: 線形ウォームアップ後、トレーニング終了まで余弦減衰
+        scheduler = get_cosine_schedule_with_warmup(
             optimizer,
-            lambda step: lr_lambda(step, num_warmup_steps, num_training_steps),
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
         )
 
         criterion = torch.nn.CrossEntropyLoss(
@@ -249,13 +225,18 @@ class PyTorchTrainer:
             )
             click.secho(f"Loading checkpoint from {checkpoint_path}", fg="cyan")
 
-            checkpoint = torch.load(checkpoint_path, map_location=device)
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
             model.load_state_dict(checkpoint["model_state"])
             optimizer.load_state_dict(checkpoint["optimizer_state"])
             scheduler.load_state_dict(checkpoint["scheduler_state"])
 
-            start_epoch = int(checkpoint["epoch"]) + 1
-            start_step = int(checkpoint["step"]) + 1
+            last_epoch = int(checkpoint["epoch"])
+            last_step = int(checkpoint["step"])
+
+            start_epoch = last_epoch + 1
+            start_step = last_step + 1
+
+            scheduler.last_epoch = last_step
 
             click.secho(f"Resuming training from epoch {start_epoch + 1}", fg="black")
         else:
@@ -312,7 +293,7 @@ class PyTorchTrainer:
                         color="cyan",
                     )
                     + " ("
-                    + f"lr: {lr:.4f}"
+                    + f"lr: {lr:.8f}"
                     + (f", loss: {loss:.3f}" if loss is not None else "")
                     + (
                         f", logits mean: {logits_mean:.3f}"
@@ -367,9 +348,9 @@ class PyTorchTrainer:
                             torch.mps.synchronize()
                             t1 = time.perf_counter()
 
-                        input_ids = batch["input_ids"].to(device)
-                        attention_mask = batch["attention_mask"].to(device)
-                        labels = batch["labels"].to(device)
+                        input_ids = batch["input_ids"].to(self.device)
+                        attention_mask = batch["attention_mask"].to(self.device)
+                        labels = batch["labels"].to(self.device)
 
                         logits = self.model(
                             input_ids,
@@ -544,7 +525,7 @@ class PyTorchTrainer:
 
         torch.save(model.state_dict(), parameters_path)
 
-    def generate_text(
+    def _generate_text(
         self,
         prompt: str,
         *,
@@ -552,17 +533,17 @@ class PyTorchTrainer:
     ) -> str:
         assert self.model is not None
 
-        device = detect_device()
-
         ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
-        idx = torch.tensor([ids], dtype=torch.long).to(device)
+        idx = torch.tensor([ids], dtype=torch.long).to(self.device)
         out = self.model._generate(idx, max_new_tokens=max_new_length)[0].cpu().tolist()
 
         return TOKENIZER.DecodeIds(out)
 
     def generate_samples(self) -> Iterable[str]:
-        for prompt in ["富士山は", "東京の", "Alan Turing is "]:
-            yield self.generate_text(prompt, max_new_length=50)
+        with torch.no_grad():
+            with self.use_cpu_on_mps():
+                for prompt in ["富士山は", "Alan Turing is "]:
+                    yield self._generate_text(prompt, max_new_length=50)
 
     def evaluate(
         self,
@@ -576,20 +557,12 @@ class PyTorchTrainer:
         total_loss = 0.0
         total_tokens = 0
 
-        device = detect_device()
-        original_device = device
-
         with torch.no_grad():
-            try:
-                # NOTE: MPS BUG? MPS Backend だと推論時に NaN が出ることがあるので、CPU で推論する
-                if CPU_EVALUATION_ON_MPS_BACKEND and device.type == "mps":
-                    device = torch.device("cpu")
-                    self.model = self.model.to(device)
-
+            with self.use_cpu_on_mps():
                 for batch in dataloader:
-                    input_ids = batch["input_ids"].to(device)
-                    attention_mask = batch["attention_mask"].to(device)
-                    labels = batch["labels"].to(device)
+                    input_ids = batch["input_ids"].to(self.device)
+                    attention_mask = batch["attention_mask"].to(self.device)
+                    labels = batch["labels"].to(self.device)
 
                     logits = self.model(
                         input_ids,
@@ -607,13 +580,28 @@ class PyTorchTrainer:
 
                     if max_tokens is not None and total_tokens >= max_tokens:
                         break
-            finally:
-                # 元のデバイスに戻す
-                self.model.to(original_device)
-                pass
 
         avg_loss = total_loss / total_tokens
         return avg_loss
+
+    @contextmanager
+    def use_cpu_on_mps(self):
+        """
+        MPS backend のバグを回避するために CPU 実行に切り替える
+        """
+        assert self.model is not None
+        original_device = self.device
+
+        try:
+            if CPU_EVALUATION_ON_MPS_BACKEND and original_device.type == "mps":
+                self.device = torch.device("cpu")
+                self.model = self.model.to(self.device)
+
+            yield
+        finally:
+            # 元のデバイスに戻す
+            self.device = original_device
+            self.model.to(original_device)
 
 
 def detect_device() -> torch.device:

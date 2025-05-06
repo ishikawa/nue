@@ -13,7 +13,17 @@ type-check:
 
 # Training
 train-local:
-	poetry run nue train --batch-size 8 --log-interval 10 --save-interval 10 --override-data-size 3%
+	poetry run nue train \
+		--batch-size 8 \
+		--lr 3e-4 \
+		--log-interval 10 \
+		--save-interval 10 \
+		--override-data-size 3%
 
 train:
-	poetry run nue train --batch-size 320 --log-interval 10 --save-interval 10 --override-data-size 3% --model-dir gs://nue-models
+	poetry run nue train \
+		--batch-size 320 \
+		--log-interval 10 \
+		--save-interval 10 \
+		--override-data-size 3% \
+		--model-dir gs://nue-models
