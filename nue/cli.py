@@ -90,7 +90,7 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
 
 
 @click.command("train")
-@click.option("--n-epochs", "n_epochs", default=10, type=int, help="Number of epochs")
+@click.option("--n-epochs", "n_epochs", default=1, type=int, help="Number of epochs")
 @click.option("--batch-size", "batch_size", default=64, type=int, help="Batch size")
 @click.option("--ctx-len", "ctx_len", default=256, type=int, help="Context length")
 @click.option(
@@ -109,18 +109,24 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
 @click.option(
     "--lr",
     "lr",
-    # 大き過ぎる初期学習率は、1 エポック目で重みが指数的に増大する
-    # 3e-4 は GPT-2 系で最も実績のある値
-    default=3e-4,
+    default=1e-4,
     type=float,
     help="Learning rate",
 )
 @click.option(
-    "--lr-scheduler-patience",
-    "lr_scheduler_patience",
+    "--max-warmup-steps",
+    "max_warmup_steps",
+    default=5_000,
     type=int,
-    default=3,
-    help="Patience for learning rate scheduler",
+    help="Maximum number of warmup steps",
+)
+@click.option("--seed", "seed", default=4649, type=int, help="Random seed")
+@click.option(
+    "--output-path",
+    "output_path",
+    default=str(BUILD_DIR / "_train"),
+    type=click.Path(file_okay=False, dir_okay=True, exists=False),
+    help="Output directory path for the trained model",
 )
 @click.option("--seed", "seed", default=4649, type=int, help="Random seed")
 @click.option(
@@ -150,6 +156,13 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     default=100,
     help="Number of training steps between saving model checkpoints.",
 )
+@click.option(
+    "--override-data-size",
+    "override_data_size",
+    type=str,
+    default=None,
+    help="Override data size for training. (e.g. 10%')",
+)
 # Options below are for debugging and not saved in training session
 @click.option(
     "--measure-time",
@@ -160,11 +173,11 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     help="Measure time for each step.",
 )
 @click.option(
-    "--override-data-size",
-    "override_data_size",
-    type=str,
-    default=None,
-    help="Override data size for training. (e.g. 10%')",
+    "--log-validation-max-tokens",
+    "log_validation_max_tokens",
+    type=int,
+    default=50_000,
+    help="Maximum number of tokens to evaluate on validation dataset per log interval.",
 )
 def train_command(
     n_epochs: int,
@@ -177,13 +190,14 @@ def train_command(
     mlp_ratio: int,
     seed: int,
     lr: float,
-    lr_scheduler_patience: int,
+    max_warmup_steps: int,
     log_interval: int,
     save_interval: int,
     output_path: str,
     model_dir: str | None = None,
     measure_time: bool = False,
     override_data_size: str | None = None,
+    log_validation_max_tokens: int = 50_000,
 ):
     from nue.train import PyTorchTrainer
 
@@ -214,11 +228,12 @@ def train_command(
             n_layers=n_layers,
             mlp_ratio=mlp_ratio,
             lr=lr,
-            lr_scheduler_patience=lr_scheduler_patience,
             seed=seed,
             model_dir=model_dir,
             log_interval=log_interval,
             save_interval=save_interval,
+            override_data_size=override_data_size,
+            max_warmup_steps=max_warmup_steps,
         )
 
         training_session = TrainingSession(
@@ -238,7 +253,7 @@ def train_command(
         + f"n_embed={training_options.n_embed}, n_heads={training_options.n_heads}, "
         + f"n_layers={training_options.n_layers}, mlp_ratio={training_options.mlp_ratio}, "
         + f"seed={training_options.seed}, "
-        + f"lr={training_options.lr}, lr_scheduler_patience={training_options.lr_scheduler_patience}",
+        + f"lr={training_options.lr}",
         fg="white",
     )
 
@@ -246,7 +261,7 @@ def train_command(
     trainer.train(
         training_session,
         measure_time=measure_time,
-        override_data_size=override_data_size,
+        log_validation_max_tokens=log_validation_max_tokens,
     )
 
 

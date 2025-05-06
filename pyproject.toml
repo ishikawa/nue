@@ -3,9 +3,9 @@ name = "nue"
 version = "0.1.0"
 description = "The homebrew-scale LLM 🐵🦝🐯🐍"
 authors = [
-    {name = "Takanori Ishikawa",email = "takanori.ishikawa@gmail.com"}
+    { name = "Takanori Ishikawa", email = "takanori.ishikawa@gmail.com" },
 ]
-license = {text = "Apache License, Version 2.0"}
+license = { text = "Apache License, Version 2.0" }
 readme = "README.md"
 requires-python = "<4.0,>=3.10"
 dependencies = [
@@ -13,13 +13,17 @@ dependencies = [
     "sentencepiece (>=0.2.0,<0.3.0)",
     "click (>=8.1.8,<9.0.0)",
     # NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出ることがある
-    # See: `CPU_EVALUATION_ON_MPS_BACKEND` in `train/torch.py`
+    # See: `CPU_EVALUATION_ON_MPS_BACKEND` in `train` module
     #
-    # [MPS] MultiheadAttention with masks and dropout produces NaNs #151667
+    # [MPS] MultiheadAttention with masks and dropout produces NaNs
     # https://github.com/pytorch/pytorch/issues/151667
-    "torch (==2.5.1)",
+    #"torch (==2.5.1)",
+    "torch (==2.7.0)",
     "yaspin (>=3.1.0,<4.0.0)",
-    "termcolor (>=2.2.0,<2.4.0)"
+    "termcolor (>=2.2.0,<2.4.0)",
+    "torchtune (>=0.6.1,<0.7.0)",
+    "torchvision (>=0.22.0,<0.23.0)",
+    "torchao (>=0.10.0,<0.11.0)",
 ]
 
 [tool.poetry]
