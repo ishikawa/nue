@@ -7,7 +7,7 @@ authors = [
 ]
 license = {text = "Apache License, Version 2.0"}
 readme = "README.md"
-requires-python = "<4.0,>=3.12"
+requires-python = "<4.0,>=3.10"
 dependencies = [
     "datasets (>=3.5.1,<4.0.0)",
     "sentencepiece (>=0.2.0,<0.3.0)",
