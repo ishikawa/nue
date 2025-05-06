@@ -23,4 +23,4 @@ train-local:
 		--log-validation-max-tokens 2048
 
 train:
-	poetry run nue train --batch-size 320
+	poetry run nue train --batch-size 256
