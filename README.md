@@ -4,6 +4,9 @@
 
 > The homebrew-scale LLM 🐵🦝🐯🐍
 
+> [!WARNING]
+> Work in progress — nothing useful here yet.
+
 I'd like to gain practical experience with transformers, particularly by understanding their architecture and real-world applications, with a focus on small-scale LLMs. To achieve this, I decided to create _a tiny LLM_. My goal is to integrate it into web applications, games, and iOS apps that interest me.
 
 ## Goal
