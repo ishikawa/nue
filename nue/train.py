@@ -53,7 +53,9 @@ class Epoch:
 class TrainingOptions:
     n_epochs: int
     batch_size: int
-    ctx_length: int
+    ctx_len: int
+    # 学習データセットのチャンク間のオーバーラップ長
+    chunk_overlap_len: int
     n_embed: int
     n_heads: int
     n_layers: int
@@ -72,24 +74,66 @@ class TrainingSession:
     options: TrainingOptions
 
 
-def build_tokenize_batch(column: str, ctx_len: int):
-    def tokenize_batch(examples):
-        input_ids = []
-        num_tokens = []
+def tokenize_and_chunk(
+    text: str, tokenizer: SentencePieceProcessor, ctx_len: int, overlap_len: int
+) -> list[list[int]]:
+    """テキストをトークナイズし、オーバーラップ付きのチャンクに分割する"""
+    tokens = tokenizer.EncodeAsIds(text)
 
-        for text in examples[column]:
-            tokens = TOKENIZER.EncodeAsIds(text)
+    if not tokens:
+        return []
 
-            # コンテキスト長を超える場合は切り捨てる
-            if len(tokens) >= ctx_len:
-                tokens = tokens[:ctx_len]
+    # トークン数がコンテキスト長より短い場合は、そのまま単一のチャンクとして返す
+    if len(tokens) <= ctx_len:
+        return [tokens]
 
-            num_tokens.append(len(tokens))
-            input_ids.append(tokens)
+    chunks = []
+    stride = ctx_len - overlap_len
 
-        return {"input_ids": input_ids, "num_tokens": num_tokens}
+    if stride <= 0:
+        raise ValueError(
+            f"overlap_len ({overlap_len}) must be smaller than ctx_len ({ctx_len})"
+        )
 
-    return tokenize_batch
+    for i in range(0, len(tokens), stride):
+        chunk = tokens[i : i + ctx_len]
+        if not chunk:  # まれにループの最後で空になる場合
+            continue
+
+        # チャンクを追加（最後のチャンクがctx_len未満でもOK）
+        chunks.append(chunk)
+
+        # 次のチャンクの開始位置が元のトークン長を超える場合、ループを終了
+        if i + stride >= len(tokens):
+            break
+
+    # 念の為、チャンクが生成されなかった場合のフォールバック
+    if not chunks and tokens:
+        chunks.append(tokens[:ctx_len])
+
+    return chunks
+
+
+# Hugging Face Datasets の map(batched=True) で使うためのラッパー関数
+def map_tokenize_and_chunk_batch(
+    examples: dict[str, list], column: str, ctx_len: int, overlap_len: int
+) -> dict[str, list]:
+    """
+    バッチ処理用の関数。各テキストをチャンク化し、フラットなリストとして返す。
+    各チャンクの元の長さも 'num_tokens' として返す。
+    """
+    processed = {"input_ids": [], "num_tokens": []}
+
+    for text in examples[column]:
+        chunks = tokenize_and_chunk(text, TOKENIZER, ctx_len, overlap_len)
+        for chunk in chunks:
+            processed["input_ids"].append(chunk)
+            # 各チャンクの実際のトークン数（パディング前）を記録
+            processed["num_tokens"].append(len(chunk))
+
+    # この関数は入力バッチの行数と出力バッチの行数が異なるが、
+    # datasets.map(batched=True) はこれに対応している
+    return processed
 
 
 def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
@@ -137,7 +181,7 @@ class PyTorchTrainer:
 
         self.config = GPTConfig(
             vocab_size=TOKENIZER.vocab_size(),
-            ctx_len=options.ctx_length,
+            ctx_len=options.ctx_len,
             n_embed=options.n_embed,
             n_heads=options.n_heads,
             n_layers=options.n_layers,
@@ -166,9 +210,13 @@ class PyTorchTrainer:
 
             # Tokenize (batched & parallel)
             dataset = dataset.map(
-                build_tokenize_batch(
-                    dataset_config.content_column, self.config.ctx_len
-                ),
+                map_tokenize_and_chunk_batch,
+                fn_kwargs={
+                    "column": dataset_config.content_column,
+                    "ctx_len": self.config.ctx_len,
+                    # TrainingOptions から overlap_len を渡す
+                    "overlap_len": self.options.chunk_overlap_len,
+                },
                 remove_columns=[dataset_config.content_column],
                 batched=True,
                 num_proc=os.cpu_count(),  # type: ignore

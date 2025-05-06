@@ -79,8 +79,13 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
 @click.command("train")
 @click.option("--n-epochs", "n_epochs", default=10, type=int, help="Number of epochs")
 @click.option("--batch-size", "batch_size", default=64, type=int, help="Batch size")
+@click.option("--ctx-len", "ctx_len", default=256, type=int, help="Context length")
 @click.option(
-    "--ctx-length", "ctx_length", default=256, type=int, help="Context length"
+    "--chunk-overlap-len",
+    "chunk_overlap_len",
+    default=16,
+    type=int,
+    help="Training data chunk overlap length",
 )
 @click.option(
     "--n-embed", "n_embed", default=512, type=int, help="Number of embeddings"
@@ -151,7 +156,8 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
 def train_command(
     n_epochs: int,
     batch_size: int,
-    ctx_length: int,
+    ctx_len: int,
+    chunk_overlap_len: int,
     n_embed: int,
     n_heads: int,
     n_layers: int,
@@ -186,7 +192,8 @@ def train_command(
 
         # --- Create a training session
         training_options = TrainingOptions(
-            ctx_length=ctx_length,
+            ctx_len=ctx_len,
+            chunk_overlap_len=chunk_overlap_len,
             n_epochs=n_epochs,
             batch_size=batch_size,
             n_embed=n_embed,
@@ -214,7 +221,7 @@ def train_command(
 
     click.secho(
         "Using torch trainer: "
-        + f"n_epochs={training_options.n_epochs}, batch_size={training_options.batch_size}, ctx_length={training_options.ctx_length}, "
+        + f"n_epochs={training_options.n_epochs}, batch_size={training_options.batch_size}, ctx_length={training_options.ctx_len}, "
         + f"n_embed={training_options.n_embed}, n_heads={training_options.n_heads}, "
         + f"n_layers={training_options.n_layers}, mlp_ratio={training_options.mlp_ratio}, "
         + f"seed={training_options.seed}, "
