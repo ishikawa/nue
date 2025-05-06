@@ -1,3 +1,4 @@
+# Workflow name
 name: CI
 
 on:
@@ -14,42 +15,33 @@ jobs:
       matrix:
         python-version: [3.12]
 
-    env:
-      poetry-version: "2.1.2"
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
         id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install pipx
-        run: |
-          pip install --user pipx
-          pipx ensurepath
+          cache: "poetry"
 
-      - name: Cache python venv
-        id: cache-python-venv
+      - name: Get poetry cache path
+        id: poetry-cache
+        run: echo "dir=$(poetry config virtualenvs.path)" >> $GITHUB_OUTPUT
+
+      - name: Cache Python virtual environment
         uses: actions/cache@v4
+        id: cache-venv
         with:
-          path: ./.venv
-          key: ${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-venv-${{ hashFiles('pyproject.toml') }}
-      - name: Cache poetry installation
-        id: cache-poetry
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/bin/poetry
-          key: ${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ env.poetry-version }}
+          path: ${{ steps.poetry-cache.outputs.dir }}
+          key: ${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-poetry-
 
-      - name: poetry
-        if: steps.cache-poetry.outputs.cache-hit != 'true'
-        run: pipx install poetry==${{ env.poetry-version }}
+      - name: Install dependencies
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction --no-root
 
-      - name: install dependencies
-        if: steps.cache-python-venv.outputs.cache-hit != 'true'
-        run: poetry install
-
-      - name: check
+      - name: Run checks
         run: make check
