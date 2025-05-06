@@ -9,7 +9,14 @@ from typing import Optional, cast
 
 import click
 import torch
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import (
+    Dataset,
+    Features,
+    Sequence,
+    Value,
+    concatenate_datasets,
+    load_dataset,
+)
 from sentencepiece import SentencePieceProcessor
 from termcolor import colored
 from torch.nn.utils.rnn import pad_sequence
@@ -53,7 +60,9 @@ class Epoch:
 class TrainingOptions:
     n_epochs: int
     batch_size: int
-    ctx_length: int
+    ctx_len: int
+    # 学習データセットのチャンク間のオーバーラップ長
+    chunk_overlap_len: int
     n_embed: int
     n_heads: int
     n_layers: int
@@ -72,24 +81,61 @@ class TrainingSession:
     options: TrainingOptions
 
 
-def build_tokenize_batch(column: str, ctx_len: int):
-    def tokenize_batch(examples):
-        input_ids = []
-        num_tokens = []
+def tokenize_and_chunk(
+    text: str, tokenizer: SentencePieceProcessor, ctx_len: int, overlap_len: int
+) -> list[list[int]]:
+    """テキストをトークナイズし、オーバーラップ付きのチャンクに分割する"""
+    tokens = tokenizer.EncodeAsIds(text)
 
-        for text in examples[column]:
-            tokens = TOKENIZER.EncodeAsIds(text)
+    if not tokens:
+        return []
 
-            # コンテキスト長を超える場合は切り捨てる
-            if len(tokens) >= ctx_len:
-                tokens = tokens[:ctx_len]
+    # トークン数がコンテキスト長より短い場合は、そのまま単一のチャンクとして返す
+    if len(tokens) <= ctx_len:
+        return [tokens]
 
-            num_tokens.append(len(tokens))
-            input_ids.append(tokens)
+    chunks = []
+    stride = ctx_len - overlap_len
 
-        return {"input_ids": input_ids, "num_tokens": num_tokens}
+    if stride <= 0:
+        raise ValueError(
+            f"overlap_len ({overlap_len}) must be smaller than ctx_len ({ctx_len})"
+        )
 
-    return tokenize_batch
+    for i in range(0, len(tokens), stride):
+        chunk = tokens[i : i + ctx_len]
+        if not chunk:  # まれにループの最後で空になる場合
+            continue
+
+        # チャンクを追加（最後のチャンクがctx_len未満でもOK）
+        chunks.append(chunk)
+
+        # 次のチャンクの開始位置が元のトークン長を超える場合、ループを終了
+        if i + stride >= len(tokens):
+            break
+
+    # 念の為、チャンクが生成されなかった場合のフォールバック
+    if not chunks and tokens:
+        chunks.append(tokens[:ctx_len])
+
+    return chunks
+
+
+# --- 第1段階の map で使用する関数 ---
+def map_tokenize_to_chunk_lists(
+    examples: dict[str, list], column: str, ctx_len: int, overlap_len: int
+) -> dict[str, list]:
+    """
+    各テキストをチャンク化し、チャンクのリストと、各チャンクの長さのリストを返す。
+    出力の行数は入力と同じ。
+    """
+    output = {"input_ids_chunks": [], "num_tokens_chunks": []}
+    # TOKENIZER はグローバル変数から参照
+    for text in examples[column]:
+        chunks = tokenize_and_chunk(text, TOKENIZER, ctx_len, overlap_len)
+        output["input_ids_chunks"].append(chunks)
+        output["num_tokens_chunks"].append([len(c) for c in chunks])
+    return output
 
 
 def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
@@ -137,7 +183,7 @@ class PyTorchTrainer:
 
         self.config = GPTConfig(
             vocab_size=TOKENIZER.vocab_size(),
-            ctx_len=options.ctx_length,
+            ctx_len=options.ctx_len,
             n_embed=options.n_embed,
             n_heads=options.n_heads,
             n_layers=options.n_layers,
@@ -145,7 +191,7 @@ class PyTorchTrainer:
         )
 
     def load_dataset(self, *, override_data_size: Optional[str] = None) -> Dataset:
-        datasets: list[Dataset] = []
+        datasets_list: list[Dataset] = []
 
         for dataset_config in DATASET_LIST:
             split = dataset_config.train_split
@@ -165,25 +211,92 @@ class PyTorchTrainer:
             )
 
             # Tokenize (batched & parallel)
-            dataset = dataset.map(
-                build_tokenize_batch(
-                    dataset_config.content_column, self.config.ctx_len
-                ),
-                remove_columns=[dataset_config.content_column],
+            mapped_dataset = dataset.map(
+                map_tokenize_to_chunk_lists,
+                fn_kwargs={
+                    "column": dataset_config.content_column,
+                    "ctx_len": self.config.ctx_len,
+                    "overlap_len": self.options.chunk_overlap_len,
+                },
+                # 元のカラムを削除
+                remove_columns=dataset.column_names,  # type: ignore
                 batched=True,
                 num_proc=os.cpu_count(),  # type: ignore
-                desc="Tokenizing dataset (batched & parallel)",  # type: ignore
+                desc=f"Tokenizing and chunking dataset for '{dataset_config.name}'",  # type: ignore
             )
 
-            # 明示的に Dataset 型にキャスト
-            dataset = cast(Dataset, dataset)
-            datasets.append(dataset)
+            # チャンクリストが空の行を除外 (元のテキストが空など)
+            filtered_dataset = mapped_dataset.filter(
+                lambda example: len(example["input_ids_chunks"]) > 0,
+                num_proc=os.cpu_count(),
+                desc=f"Filtering empty rows for '{dataset_config.name}'",
+            )
 
-        # 連結して共通前処理
-        dataset = concatenate_datasets(datasets)
-        dataset.set_format(type="torch", columns=["input_ids"])
+            # --- 第2段階: フラット化 ---
+            # フラット化後のデータセットのスキーマ (特徴量) を定義
+            new_features = Features(
+                {
+                    "input_ids": Sequence(feature=Value(dtype="int32")),
+                    "num_tokens": Value(dtype="int32"),
+                }
+            )
 
-        return dataset
+            # フラット化を行う関数 (map(batched=True)で使う)
+            def flatten_batch(examples: dict[str, list]) -> dict[str, list]:
+                flat_input_ids = []
+                flat_num_tokens = []
+                # バッチ内の各サンプル (チャンクのリストを持っている) をループ
+                for i in range(len(examples["input_ids_chunks"])):
+                    # 各サンプル内のチャンクをループ
+                    for j in range(len(examples["input_ids_chunks"][i])):
+                        flat_input_ids.append(examples["input_ids_chunks"][i][j])
+                        flat_num_tokens.append(examples["num_tokens_chunks"][i][j])
+                # 出力行数は入力行数と異なる可能性がある
+                return {"input_ids": flat_input_ids, "num_tokens": flat_num_tokens}
+
+            # map を使ったフラット化 (num_proc > 1 で試行)
+            # この map は入力と出力の行数が異なるため、エラーが出る可能性がある
+            flat_dataset = filtered_dataset.map(
+                flatten_batch,
+                batched=True,
+                # フラット化前のネストしたカラムを削除
+                remove_columns=["input_ids_chunks", "num_tokens_chunks"],
+                # 新しいスキーマを指定 (重要)
+                features=new_features,
+                num_proc=os.cpu_count(),
+                desc=f"Flattening chunks for '{dataset_config.name}' (parallel)",
+            )
+            print(
+                colored(
+                    f"Successfully flattened '{dataset_config.name}' using map(batched=True, num_proc={os.cpu_count()})",
+                    "green",
+                )
+            )
+
+            processed_dataset = cast(Dataset, flat_dataset)
+            datasets_list.append(processed_dataset)
+
+        # 連結 (変更なし)
+        final_dataset = concatenate_datasets(datasets_list)
+
+        # 合計トークン数計算 (num_tokens カラムを使用)
+        if "num_tokens" not in final_dataset.column_names:
+            print(
+                colored(
+                    "Warning: 'num_tokens' column not found after flattening. Re-calculating.",
+                    "yellow",
+                )
+            )
+            # この map は比較的軽量なので並列化しても問題ないことが多い
+            final_dataset = final_dataset.map(
+                lambda x: {"num_tokens": len(x["input_ids"])}, num_proc=os.cpu_count()
+            )
+        self.total_tokens = sum(final_dataset["num_tokens"])
+
+        # フォーマット設定 (input_ids のみ torch テンソルにする)
+        final_dataset.set_format(type="torch", columns=["input_ids"])
+
+        return final_dataset
 
     def train(
         self,
