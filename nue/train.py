@@ -18,7 +18,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Optional, cast
+from typing import Iterable, Optional, cast
 
 import click
 import torch
@@ -611,13 +611,24 @@ class PyTorchTrainer:
                             # 最低限安定して計測できるように 50,000 トークンまで
                             try:
                                 model.eval()
+
+                                # 評価
                                 val_loss = self.evaluate(
                                     validation_loader, criterion, max_tokens=50_000
                                 )
+                                scheduler.step(val_loss)
+
+                                # サンプル生成
+                                with torch.no_grad():
+                                    for text in self.generate_samples():
+                                        spinner.write(
+                                            colored(
+                                                f"  SAMPLE: {text}",
+                                                "yellow",
+                                            )
+                                        )
                             finally:
                                 model.train()
-
-                            scheduler.step(val_loss)
 
                             # 平均 loss を計算
                             avg_loss = total_loss / options.log_interval
@@ -661,25 +672,23 @@ class PyTorchTrainer:
                     finally:
                         i_step += 1
 
-                # エポック終わりのサンプル生成
+                # エポック終わりのサンプル生成と評価
                 try:
                     model.eval()
 
-                    with torch.no_grad():
-                        prompt = "昔々"
-                        ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
-                        idx = torch.tensor([ids], dtype=torch.long).to(device)
-                        out = model._generate(idx, max_new_tokens=50)[0].cpu().tolist()
-
-                        spinner.write(
-                            colored(
-                                f"  Sample generation: {TOKENIZER.DecodeIds(out)}",
-                                "yellow",
-                            )
-                        )
-
+                    # 評価
                     val_loss = self.evaluate(validation_loader, criterion)
                     scheduler.step(val_loss)
+
+                    # サンプル生成
+                    with torch.no_grad():
+                        for text in self.generate_samples():
+                            spinner.write(
+                                colored(
+                                    f"  Sample generation: {text}",
+                                    "yellow",
+                                )
+                            )
                 finally:
                     model.train()
 
@@ -730,6 +739,10 @@ class PyTorchTrainer:
         out = self.model._generate(idx, max_new_tokens=max_new_length)[0].cpu().tolist()
 
         return TOKENIZER.DecodeIds(out)
+
+    def generate_samples(self) -> Iterable[str]:
+        for prompt in ["富士山は", "東京の", "Alan Turing is "]:
+            yield self.generate_text(prompt, max_new_length=50)
 
     def evaluate(
         self,
