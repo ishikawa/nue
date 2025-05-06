@@ -14,42 +14,33 @@ jobs:
       matrix:
         python-version: [3.12]
 
-    env:
-      poetry-version: "2.1.2"
-
     steps:
-      - uses: actions/checkout@v4
-
+      - name: Checkout code
+        uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
         id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
       - name: Install pipx
         run: |
-          pip install --user pipx
-          pipx ensurepath
+          python -m pip install --user pipx
+          python -m pipx ensurepath
 
-      - name: Cache python venv
-        id: cache-python-venv
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Cache Python virtual environment
         uses: actions/cache@v4
+        id: cache-venv
         with:
           path: ./.venv
-          key: ${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-venv-${{ hashFiles('pyproject.toml') }}
-      - name: Cache poetry installation
-        id: cache-poetry
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/bin/poetry
-          key: ${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ env.poetry-version }}
+          key: ${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-poetry-${{ hashFiles('./poetry.lock') }}
 
-      - name: poetry
-        if: steps.cache-poetry.outputs.cache-hit != 'true'
-        run: pipx install poetry==${{ env.poetry-version }}
+      - name: Install dependencies
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction --no-root
 
-      - name: install dependencies
-        if: steps.cache-python-venv.outputs.cache-hit != 'true'
-        run: poetry install
-
-      - name: check
+      - name: Run checks
         run: make check
