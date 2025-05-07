@@ -402,7 +402,9 @@ class PyTorchTrainer:
                             t3 = time.perf_counter()
 
                         # 勾配のクリッピング
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                        # ただし、小規模モデルは毎 step でなくても安定する
+                        if i_step % 4 == 0:
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
                         # パラメータの更新
                         optimizer.step()
