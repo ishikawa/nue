@@ -49,6 +49,11 @@ CPU_EVALUATION_ON_MPS_BACKEND = True
 PLATFORM_MAC = "Darwin" in platform.system()
 PLATFORM_WINDOWS = "Windows" in platform.system()
 
+# Device check
+if torch.cuda.is_available():
+    if not torch.cuda.is_bf16_supported():
+        raise RuntimeError("`bfloat16` is not supported on this device")
+
 
 def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     # 1) 各シーケンス
@@ -351,37 +356,39 @@ class PyTorchTrainer:
                             logits_mean=logits_mean,
                         )
 
-                        # ここで bfloat16 モードに切り替え
-                        # NOTE: MPS ではほとんどパフォーマンスの違いがないためコメントアウト
-                        # with torch.autocast(device_type="mps", dtype=torch.bfloat16):
                         if measure_time:
                             torch.mps.synchronize()
                             t0 = time.perf_counter()
 
                         batch = next(loader_iter)
 
-                        if measure_time:
-                            torch.mps.synchronize()
-                            t1 = time.perf_counter()
+                        # Runs the forward pass under `autocast`.
+                        with torch.autocast(
+                            device_type=self.device.type, dtype=torch.bfloat16
+                        ):
+                            if measure_time:
+                                torch.mps.synchronize()
+                                t1 = time.perf_counter()
 
-                        input_ids = batch["input_ids"].to(self.device)
-                        attention_mask = batch["attention_mask"].to(self.device)
-                        labels = batch["labels"].to(self.device)
+                            input_ids = batch["input_ids"].to(self.device)
+                            attention_mask = batch["attention_mask"].to(self.device)
+                            labels = batch["labels"].to(self.device)
 
-                        logits = self.model(
-                            input_ids,
-                            attention_mask=attention_mask,
-                        )
+                            logits = self.model(
+                                input_ids,
+                                attention_mask=attention_mask,
+                            )
 
-                        if measure_time:
-                            torch.mps.synchronize()
-                            t2 = time.perf_counter()
+                            if measure_time:
+                                torch.mps.synchronize()
+                                t2 = time.perf_counter()
 
-                        loss = criterion(
-                            logits.view(-1, self.config.vocab_size),
-                            labels.view(-1),
-                        )
+                            loss = criterion(
+                                logits.view(-1, self.config.vocab_size),
+                                labels.view(-1),
+                            )
 
+                        # Exits `autocast` before backward().
                         logits_mean = logits.abs().mean().item()
 
                         set_spinner_text(
@@ -391,9 +398,6 @@ class PyTorchTrainer:
                             loss=loss.item(),
                             logits_mean=logits_mean,
                         )
-
-                        # MPS では GradScaler 要らず。そのまま backward → step
-                        # NOTE: MPS ではほとんどパフォーマンスの違いがないためコメントアウト
 
                         # 勾配の計算
                         loss.backward()

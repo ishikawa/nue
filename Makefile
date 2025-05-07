@@ -14,9 +14,9 @@ type-check:
 # Training
 train-local:
 	poetry run nue train \
-		--batch-size 8 \
+		--batch-size 4 \
 		--lr 3e-4 \
-		--max-warmup-steps 100 \
+		--max-warmup-steps 20 \
 		--log-interval 10 \
 		--save-interval 10 \
 		--override-data-size 3% \
