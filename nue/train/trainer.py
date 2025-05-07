@@ -286,9 +286,10 @@ class PyTorchTrainer:
                 loss: Optional[float] = None,
                 logits_mean: Optional[float] = None,
             ):
+                p = (i_step + 1) / num_training_steps_per_epoch
                 spinner.text = (
                     colored(
-                        f"Epoch {i_epoch + 1}/{options.n_epochs} Step {i_step + 1}",
+                        f"Epoch {i_epoch + 1}/{options.n_epochs} Step {i_step + 1} ({p:.1%})",
                         color="cyan",
                     )
                     + " ("
