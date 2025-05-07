@@ -91,7 +91,7 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
 
 @click.command("train")
 @click.option("--n-epochs", "n_epochs", default=1, type=int, help="Number of epochs")
-@click.option("--batch-size", "batch_size", default=64, type=int, help="Batch size")
+@click.option("--batch-size", "batch_size", default=256, type=int, help="Batch size")
 @click.option("--ctx-len", "ctx_len", default=256, type=int, help="Context length")
 @click.option(
     "--chunk-overlap-len",
@@ -146,14 +146,14 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     "--log-interval",
     "log_interval",
     type=int,
-    default=100,
+    default=500,
     help="Number of training steps between logging.",
 )
 @click.option(
     "--save-interval",
     "save_interval",
     type=int,
-    default=100,
+    default=500,
     help="Number of training steps between saving model checkpoints.",
 )
 @click.option(

@@ -16,13 +16,15 @@ import dataclasses
 import json
 import math
 import os
+import platform
 import time
 from contextlib import contextmanager
-from typing import Iterable, Optional
+from typing import Iterable, Optional, cast
 
 import click
 import torch
 from termcolor import colored
+from torch.amp.grad_scaler import GradScaler
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
@@ -43,6 +45,15 @@ from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
 #
 # このフラグを True にすると、MPS での評価時は CPU で推論する
 CPU_EVALUATION_ON_MPS_BACKEND = True
+
+# Platform detection
+PLATFORM_MAC = "Darwin" in platform.system()
+PLATFORM_WINDOWS = "Windows" in platform.system()
+
+# Device check
+if torch.cuda.is_available():
+    if not torch.cuda.is_bf16_supported():
+        raise RuntimeError("`bfloat16` is not supported on this device")
 
 
 def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
@@ -79,7 +90,7 @@ def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]
 class PyTorchTrainer:
     config: GPTConfig
     options: TrainingOptions
-    model: MinimalGPT | None = None
+    model: torch.nn.Module | None = None
 
     def __init__(
         self,
@@ -122,11 +133,15 @@ class PyTorchTrainer:
         with open(os.path.join(session.options.model_dir, "hparams.json"), "w") as f:
             json.dump(dataclasses.asdict(self.config), f, indent=4)
 
-        # --------- 2) Minimal GPT 初期化 ---------
-        click.secho("[2/7] Initialize Minimal GPT", fg="green", bold=True)
+        # --------- 2) Model 初期化 ---------
+        click.secho("[2/7] Initialize model", fg="green", bold=True)
 
         model = MinimalGPT(self.config).to(torch.bfloat16).to(self.device)
         model.apply(init_weights)
+
+        # Compile model
+        if self.device.type != "mps":
+            model = cast(torch.nn.Module, torch.compile(model, mode="max-autotune"))
 
         self.model = model
 
@@ -147,11 +162,21 @@ class PyTorchTrainer:
         dataset = train_and_test_datasets["train"]
 
         # DataLoader
-        loader = DataLoader(
+        # - train_loader のみ並列化とメモリ固定
+        # - macOS/Windows では並列化しない
+        if PLATFORM_MAC or PLATFORM_WINDOWS:
+            data_loader_num_workers = 0
+        else:
+            data_loader_num_workers = os.cpu_count() or 0
+
+        train_loader = DataLoader(
             dataset,  # type: ignore
             batch_size=options.batch_size,
             shuffle=True,
             collate_fn=collate_pad,
+            num_workers=data_loader_num_workers,
+            persistent_workers=data_loader_num_workers > 0,
+            pin_memory=self.device.type != "mps",
         )
         validation_loader = DataLoader(
             validation_dataset,  # type: ignore
@@ -180,6 +205,7 @@ class PyTorchTrainer:
             lr=options.lr,
             # 過学習防止のため正則化
             weight_decay=0.01,
+            fused=True,
         )
 
         # --- スケジューラーの設定 ---
@@ -276,6 +302,13 @@ class PyTorchTrainer:
         loss = None
         logits_mean = None
 
+        # MPS では AMP (自動混合精度) を使用しない
+        use_amp = self.device.type != "mps"
+
+        # Constructs a ``scaler`` once, at the beginning of the convergence run, using default
+        # arguments.
+        grad_scaler = GradScaler(self.device.type, enabled=use_amp)
+
         with yaspin().cyan as spinner:
 
             def set_spinner_text(
@@ -286,9 +319,10 @@ class PyTorchTrainer:
                 loss: Optional[float] = None,
                 logits_mean: Optional[float] = None,
             ):
+                p = (i_step + 1) / num_training_steps_per_epoch
                 spinner.text = (
                     colored(
-                        f"Epoch {i_epoch + 1}/{options.n_epochs} Step {i_step + 1}",
+                        f"Epoch {i_epoch + 1}/{options.n_epochs} Step {i_step + 1} ({p:.1%})",
                         color="cyan",
                     )
                     + " ("
@@ -318,7 +352,7 @@ class PyTorchTrainer:
                 optimizer_elapsed = 0.0
 
                 i_step = 0
-                loader_iter = iter(loader)
+                loader_iter = iter(train_loader)
 
                 while True:
                     try:
@@ -334,37 +368,41 @@ class PyTorchTrainer:
                             logits_mean=logits_mean,
                         )
 
-                        # ここで bfloat16 モードに切り替え
-                        # NOTE: MPS ではほとんどパフォーマンスの違いがないためコメントアウト
-                        # with torch.autocast(device_type="mps", dtype=torch.bfloat16):
                         if measure_time:
                             torch.mps.synchronize()
                             t0 = time.perf_counter()
 
                         batch = next(loader_iter)
 
-                        if measure_time:
-                            torch.mps.synchronize()
-                            t1 = time.perf_counter()
+                        # Runs the forward pass under `autocast`.
+                        with torch.autocast(
+                            device_type=self.device.type,
+                            dtype=torch.bfloat16,
+                            enabled=use_amp,
+                        ):
+                            if measure_time:
+                                torch.mps.synchronize()
+                                t1 = time.perf_counter()
 
-                        input_ids = batch["input_ids"].to(self.device)
-                        attention_mask = batch["attention_mask"].to(self.device)
-                        labels = batch["labels"].to(self.device)
+                            input_ids = batch["input_ids"].to(self.device)
+                            attention_mask = batch["attention_mask"].to(self.device)
+                            labels = batch["labels"].to(self.device)
 
-                        logits = self.model(
-                            input_ids,
-                            attention_mask=attention_mask,
-                        )
+                            logits = self.model(
+                                input_ids,
+                                attention_mask=attention_mask,
+                            )
 
-                        if measure_time:
-                            torch.mps.synchronize()
-                            t2 = time.perf_counter()
+                            if measure_time:
+                                torch.mps.synchronize()
+                                t2 = time.perf_counter()
 
-                        loss = criterion(
-                            logits.view(-1, self.config.vocab_size),
-                            labels.view(-1),
-                        )
+                            loss = criterion(
+                                logits.view(-1, self.config.vocab_size),
+                                labels.view(-1),
+                            )
 
+                        # Exits `autocast` before backward().
                         logits_mean = logits.abs().mean().item()
 
                         set_spinner_text(
@@ -375,21 +413,24 @@ class PyTorchTrainer:
                             logits_mean=logits_mean,
                         )
 
-                        # MPS では GradScaler 要らず。そのまま backward → step
-                        # NOTE: MPS ではほとんどパフォーマンスの違いがないためコメントアウト
-
                         # 勾配の計算
-                        loss.backward()
+                        grad_scaler.scale(loss).backward()
 
                         if measure_time:
                             torch.mps.synchronize()
                             t3 = time.perf_counter()
 
                         # 勾配のクリッピング
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                        # ただし、小規模モデルは毎 step でなくても安定する
+                        if i_step % 4 == 0:
+                            # Un-scales the gradients of optimizer's assigned parameters in-place
+                            grad_scaler.unscale_(optimizer)
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
                         # パラメータの更新
-                        optimizer.step()
+                        grad_scaler.step(optimizer)
+                        grad_scaler.update()
+
                         scheduler.step()
 
                         # 勾配の初期化
@@ -492,7 +533,7 @@ class PyTorchTrainer:
                 finally:
                     model.train()
 
-                avg_epoch_loss = epoch_loss / len(loader)
+                avg_epoch_loss = epoch_loss / len(train_loader)
                 session.epochs.append(Epoch(epoch=i_epoch + 1, loss=avg_epoch_loss))
 
                 spinner.write(
@@ -534,9 +575,20 @@ class PyTorchTrainer:
 
         ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
         idx = torch.tensor([ids], dtype=torch.long).to(self.device)
-        out = self.model._generate(idx, max_new_tokens=max_new_length)[0].cpu().tolist()
+        out = self._generate(idx, max_new_tokens=max_new_length)[0].cpu().tolist()
 
         return TOKENIZER.DecodeIds(out)
+
+    @torch.no_grad()
+    def _generate(self, idx: torch.Tensor, max_new_tokens: int = 32):
+        """Greedy text generation (for demo)."""
+        assert self.model is not None
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -self.config.ctx_len :]
+            logits = self.model(idx_cond)[:, -1, :]  # [B,vocab]
+            next_tok = logits.argmax(dim=-1, keepdim=True)
+            idx = torch.cat([idx, next_tok], dim=1)
+        return idx
 
     def generate_samples(self) -> Iterable[str]:
         with torch.no_grad():
@@ -569,7 +621,7 @@ class PyTorchTrainer:
                     )
 
                     loss = criterion(
-                        logits.view(-1, self.model.cfg.vocab_size),
+                        logits.view(-1, self.config.vocab_size),
                         labels.view(-1),
                     )
 
@@ -620,5 +672,4 @@ def format_number_abbrev(n: int) -> str:
     elif n >= 1_000:
         return f"{n / 1_000:.1f}K"
     else:
-        return str(n)
         return str(n)
