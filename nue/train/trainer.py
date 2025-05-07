@@ -195,6 +195,7 @@ class PyTorchTrainer:
             lr=options.lr,
             # 過学習防止のため正則化
             weight_decay=0.01,
+            fused=True,
         )
 
         # --- スケジューラーの設定 ---
