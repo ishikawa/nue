@@ -19,7 +19,7 @@ import os
 import platform
 import time
 from contextlib import contextmanager
-from typing import Iterable, Optional
+from typing import Iterable, Optional, cast
 
 import click
 import torch
@@ -90,7 +90,7 @@ def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]
 class PyTorchTrainer:
     config: GPTConfig
     options: TrainingOptions
-    model: MinimalGPT | None = None
+    model: torch.nn.Module | None = None
 
     def __init__(
         self,
@@ -133,11 +133,15 @@ class PyTorchTrainer:
         with open(os.path.join(session.options.model_dir, "hparams.json"), "w") as f:
             json.dump(dataclasses.asdict(self.config), f, indent=4)
 
-        # --------- 2) Minimal GPT 初期化 ---------
-        click.secho("[2/7] Initialize Minimal GPT", fg="green", bold=True)
+        # --------- 2) Model 初期化 ---------
+        click.secho("[2/7] Initialize model", fg="green", bold=True)
 
         model = MinimalGPT(self.config).to(torch.bfloat16).to(self.device)
         model.apply(init_weights)
+
+        # Compile model
+        if self.device.type != "mps":
+            model = cast(torch.nn.Module, torch.compile(model, mode="max-autotune"))
 
         self.model = model
 
@@ -571,9 +575,20 @@ class PyTorchTrainer:
 
         ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
         idx = torch.tensor([ids], dtype=torch.long).to(self.device)
-        out = self.model._generate(idx, max_new_tokens=max_new_length)[0].cpu().tolist()
+        out = self._generate(idx, max_new_tokens=max_new_length)[0].cpu().tolist()
 
         return TOKENIZER.DecodeIds(out)
+
+    @torch.no_grad()
+    def _generate(self, idx: torch.Tensor, max_new_tokens: int = 32):
+        """Greedy text generation (for demo)."""
+        assert self.model is not None
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -self.config.ctx_len :]
+            logits = self.model(idx_cond)[:, -1, :]  # [B,vocab]
+            next_tok = logits.argmax(dim=-1, keepdim=True)
+            idx = torch.cat([idx, next_tok], dim=1)
+        return idx
 
     def generate_samples(self) -> Iterable[str]:
         with torch.no_grad():
@@ -606,7 +621,7 @@ class PyTorchTrainer:
                     )
 
                     loss = criterion(
-                        logits.view(-1, self.model.cfg.vocab_size),
+                        logits.view(-1, self.config.vocab_size),
                         labels.view(-1),
                     )
 
@@ -657,5 +672,4 @@ def format_number_abbrev(n: int) -> str:
     elif n >= 1_000:
         return f"{n / 1_000:.1f}K"
     else:
-        return str(n)
         return str(n)

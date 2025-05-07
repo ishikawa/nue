@@ -207,16 +207,6 @@ class MinimalGPT(nn.Module):
         logits = self.head(x)
         return logits
 
-    @torch.no_grad()
-    def _generate(self, idx: torch.Tensor, max_new_tokens: int = 32):
-        """Greedy text generation (for demo)."""
-        for _ in range(max_new_tokens):
-            idx_cond = idx[:, -self.cfg.ctx_len :]
-            logits = self(idx_cond)[:, -1, :]  # [B,vocab]
-            next_tok = logits.argmax(dim=-1, keepdim=True)
-            idx = torch.cat([idx, next_tok], dim=1)
-        return idx
-
 
 # PyTorch のデフォルト初期化だと、|logit| >= 10 となってしまい、スケール爆発 -> CE loss が高止まりしてしまう
 # 0.02 trunc-normal で初期化
