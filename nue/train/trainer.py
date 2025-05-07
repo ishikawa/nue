@@ -24,6 +24,7 @@ from typing import Iterable, Optional
 import click
 import torch
 from termcolor import colored
+from torch.amp.grad_scaler import GradScaler
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
@@ -297,6 +298,13 @@ class PyTorchTrainer:
         loss = None
         logits_mean = None
 
+        # MPS では AMP (自動混合精度) を使用しない
+        use_amp = self.device.type != "mps"
+
+        # Constructs a ``scaler`` once, at the beginning of the convergence run, using default
+        # arguments.
+        grad_scaler = GradScaler(self.device.type, enabled=use_amp)
+
         with yaspin().cyan as spinner:
 
             def set_spinner_text(
@@ -364,7 +372,9 @@ class PyTorchTrainer:
 
                         # Runs the forward pass under `autocast`.
                         with torch.autocast(
-                            device_type=self.device.type, dtype=torch.bfloat16
+                            device_type=self.device.type,
+                            dtype=torch.bfloat16,
+                            enabled=use_amp,
                         ):
                             if measure_time:
                                 torch.mps.synchronize()
@@ -400,7 +410,7 @@ class PyTorchTrainer:
                         )
 
                         # 勾配の計算
-                        loss.backward()
+                        grad_scaler.scale(loss).backward()
 
                         if measure_time:
                             torch.mps.synchronize()
@@ -409,10 +419,14 @@ class PyTorchTrainer:
                         # 勾配のクリッピング
                         # ただし、小規模モデルは毎 step でなくても安定する
                         if i_step % 4 == 0:
+                            # Un-scales the gradients of optimizer's assigned parameters in-place
+                            grad_scaler.unscale_(optimizer)
                             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
                         # パラメータの更新
-                        optimizer.step()
+                        grad_scaler.step(optimizer)
+                        grad_scaler.update()
+
                         scheduler.step()
 
                         # 勾配の初期化
