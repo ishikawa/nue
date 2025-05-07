@@ -16,6 +16,7 @@ import dataclasses
 import json
 import math
 import os
+import platform
 import time
 from contextlib import contextmanager
 from typing import Iterable, Optional
@@ -43,6 +44,10 @@ from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
 #
 # このフラグを True にすると、MPS での評価時は CPU で推論する
 CPU_EVALUATION_ON_MPS_BACKEND = True
+
+# Platform detection
+PLATFORM_MAC = "Darwin" in platform.system()
+PLATFORM_WINDOWS = "Windows" in platform.system()
 
 
 def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
@@ -147,11 +152,21 @@ class PyTorchTrainer:
         dataset = train_and_test_datasets["train"]
 
         # DataLoader
-        loader = DataLoader(
+        # - train_loader のみ並列化とメモリ固定
+        # - macOS/Windows では並列化しない
+        if PLATFORM_MAC or PLATFORM_WINDOWS:
+            data_loader_num_workers = 0
+        else:
+            data_loader_num_workers = os.cpu_count() or 0
+
+        train_loader = DataLoader(
             dataset,  # type: ignore
             batch_size=options.batch_size,
             shuffle=True,
             collate_fn=collate_pad,
+            num_workers=data_loader_num_workers,
+            persistent_workers=data_loader_num_workers > 0,
+            pin_memory=self.device.type != "mps",
         )
         validation_loader = DataLoader(
             validation_dataset,  # type: ignore
@@ -319,7 +334,7 @@ class PyTorchTrainer:
                 optimizer_elapsed = 0.0
 
                 i_step = 0
-                loader_iter = iter(loader)
+                loader_iter = iter(train_loader)
 
                 while True:
                     try:
@@ -493,7 +508,7 @@ class PyTorchTrainer:
                 finally:
                     model.train()
 
-                avg_epoch_loss = epoch_loss / len(loader)
+                avg_epoch_loss = epoch_loss / len(train_loader)
                 session.epochs.append(Epoch(epoch=i_epoch + 1, loss=avg_epoch_loss))
 
                 spinner.write(
