@@ -179,6 +179,13 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     default=50_000,
     help="Maximum number of tokens to evaluate on validation dataset per log interval.",
 )
+@click.option(
+    "--override-base-lr",
+    "override_base_lr",
+    type=float,
+    default=None,
+    help="Override base learning rate.",
+)
 def train_command(
     n_epochs: int,
     batch_size: int,
@@ -198,6 +205,7 @@ def train_command(
     measure_time: bool = False,
     override_data_size: str | None = None,
     log_validation_max_tokens: int = 50_000,
+    override_base_lr: float | None = None,
 ):
     from nue.train import PyTorchTrainer
 
@@ -262,6 +270,7 @@ def train_command(
         training_session,
         measure_time=measure_time,
         log_validation_max_tokens=log_validation_max_tokens,
+        override_base_lr=override_base_lr,
     )
 
 
