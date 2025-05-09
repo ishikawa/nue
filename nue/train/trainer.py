@@ -19,7 +19,6 @@ import os
 import platform
 import time
 from contextlib import contextmanager
-from turtle import st
 from typing import Iterable, Optional, cast
 
 import click
