@@ -363,6 +363,7 @@ class PyTorchTrainer:
                 forward_elapsed = 0.0
                 backward_elapsed = 0.0
                 optimizer_elapsed = 0.0
+                step_elapsed = 0.0
 
                 i_step = 0
                 loader_iter = iter(train_loader)
@@ -462,6 +463,7 @@ class PyTorchTrainer:
                         forward_elapsed += t2 - t1
                         backward_elapsed += t3 - t2
                         optimizer_elapsed += t4 - t3
+                        step_elapsed += t4 - t0
 
                         # Log training progress
                         if (i_step + 1) % options.log_interval == 0:
@@ -506,10 +508,15 @@ class PyTorchTrainer:
                             progress += f"{colored('lr=', 'cyan')}{lr:.6f} "
 
                             if measure_time:
+                                progress += "("
+                                progress += (
+                                    f"{step_elapsed / options.log_interval:.3f}s "
+                                )
                                 progress += f"{colored('io=', 'cyan')}{io_elapsed / options.log_interval:.3f}s "
                                 progress += f"{colored('forward=', 'cyan')}{forward_elapsed / options.log_interval:.3f}s "
                                 progress += f"{colored('backward=', 'cyan')}{backward_elapsed / options.log_interval:.3f}s "
-                                progress += f"{colored('optimizer=', 'cyan')}{optimizer_elapsed / options.log_interval:.3f}s "
+                                progress += f"{colored('optimizer=', 'cyan')}{optimizer_elapsed / options.log_interval:.3f}s"
+                                progress += ")"
 
                             spinner.write(progress)
 
