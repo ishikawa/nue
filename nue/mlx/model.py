@@ -55,15 +55,8 @@ class SelfAttention(nn.Module):
         # RoPE
         self.rope = nn.RoPE(self.head_dim)
 
-        # Causal boolean mask template (True means ignore/mask out)
-        self.causal = mx.triu(
-            mx.full(
-                (config.ctx_len, config.ctx_len),
-                True,
-                dtype=mx.bool_,  # type: ignore
-            ),
-            k=1,
-        )
+        # Causal mask template (float32)
+        self.causal = nn.MultiHeadAttention.create_additive_causal_mask(config.ctx_len)
 
     def __call__(self, x: mx.array, attention_mask: mx.array | None = None):
         # x: [B, L, D]
@@ -85,13 +78,18 @@ class SelfAttention(nn.Module):
         q = self.rope(q)
         k = self.rope(k)
 
-        # 4) Prepare attention
+        # 4) Prepare attention mask
         if attention_mask is not None:
+            # boolean mask -> additive mask to reduce conversion cost in SDPA kernel
             pad = cast(mx.array, attention_mask == 0)  # [B, L]、True=pad
-            pad = mx.expand_dims(pad, (1, 2))  # → [B,1,1,L]
-            attention_mask = self.causal[:, :, :L, :L] | pad
+            pad = mx.expand_dims(pad, (1, 2)).astype(q.dtype) * -1e9  # [B,1,1,L]
+
+            causal = self.causal[:L, :L][None, None, ...]  # [1,1,L,L]
+            attention_mask = causal + pad
         else:
-            attention_mask = self.causal[..., :L, :L]
+            attention_mask = self.causal[:L, :L][None, None, ...].astype(
+                q.dtype
+            )  # [1,1,L,L]
 
         # 5) scaled dot product attention
         out = mx.fast.scaled_dot_product_attention(
@@ -136,6 +134,7 @@ class NueLM(nn.Module):
         )
         self.ln_f = nn.LayerNorm(config.n_embed)
         self.head = nn.Linear(config.n_embed, config.vocab_size, bias=False)
+
         # weight tying
         self.head.weight = self.tok_emb.weight
 
@@ -168,13 +167,15 @@ class NueLM(nn.Module):
 # 2.0 に設定することで、標準偏差 0.02 の正規分布での -0.04〜+0.04 に相当する
 def trunc_normal_like(arr: mx.array, std=0.02, mean=0.0, trunc_scale=2.0) -> mx.array:
     """Return array shaped like `arr` from N(mean, std) truncated to ±trunc_scale·std."""
+    # NOTE: fp32 で初期化。最後に cast することで、分布が崩れないようにする
+
     # 1) 標準正規の ±trunc_scale を切り取ってサンプリング
     sample = mx.random.truncated_normal(
-        -trunc_scale, trunc_scale, shape=arr.shape, dtype=arr.dtype
+        -trunc_scale, trunc_scale, shape=arr.shape, dtype=mx.float32
     )
 
     # 2) スケーリング & シフト
-    return sample * std + mean
+    return (sample * std + mean).astype(arr.dtype)
 
 
 # 出力層重みを ±0.04 に制限することで、活性化後のスケールが 線形に 0.02 σ へ収束 -> 過大な logits を抑制
