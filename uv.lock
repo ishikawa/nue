@@ -829,7 +829,6 @@ source = { virtual = "." }
 dependencies = [
     { name = "click" },
     { name = "datasets" },
-    { name = "mlx" },
     { name = "sentencepiece" },
     { name = "termcolor" },
     { name = "torch" },
@@ -837,6 +836,11 @@ dependencies = [
     { name = "torchtune" },
     { name = "torchvision" },
     { name = "yaspin" },
+]
+
+[package.optional-dependencies]
+mlx = [
+    { name = "mlx" },
 ]
 
 [package.dev-dependencies]
@@ -850,7 +854,7 @@ dev = [
 requires-dist = [
     { name = "click", specifier = ">=8.1.8" },
     { name = "datasets", specifier = ">=3.6.0" },
-    { name = "mlx", specifier = ">=0.25.2" },
+    { name = "mlx", marker = "extra == 'mlx'", specifier = "==0.25.2" },
     { name = "sentencepiece", specifier = "==0.2.0" },
     { name = "termcolor", specifier = ">=2.3.0" },
     { name = "torch", specifier = ">=2.7.0" },
@@ -859,6 +863,7 @@ requires-dist = [
     { name = "torchvision", specifier = ">=0.22.0" },
     { name = "yaspin", specifier = ">=3.1.0" },
 ]
+provides-extras = ["mlx"]
 
 [package.metadata.requires-dev]
 dev = [
