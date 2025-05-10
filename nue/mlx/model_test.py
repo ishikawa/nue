@@ -13,3 +13,4 @@ def test_simple():
     )
     m = Nue(config)
     assert m
+    print(m.parameters())

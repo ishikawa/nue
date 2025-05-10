@@ -11,6 +11,9 @@ lint:
 type-check:
 	uv run pyright ./nue
 
+test:
+	uv run python -m pytest ./nue
+
 # Training
 train-local:
 	uv run python -m nue.cli train \
