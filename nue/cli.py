@@ -208,7 +208,8 @@ def train_command(
     log_validation_max_tokens: int = 50_000,
     override_base_lr: float | None = None,
 ):
-    from nue.train import Epoch, PyTorchTrainer, TrainingOptions, TrainingSession
+    from nue.train import Epoch, TrainingOptions, TrainingSession
+    from nue.train.torch import PyTorchTrainer
 
     if model_dir is not None:
         click.secho(f"Resuming training from checkpoint {model_dir}", fg="green")

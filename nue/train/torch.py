@@ -33,7 +33,8 @@ from torchtune.training import get_cosine_schedule_with_warmup
 from yaspin import yaspin
 from yaspin.core import Yaspin
 
-from nue.gpt import GPTConfig, MinimalGPT, init_weights
+from nue.model.base import GPTConfig
+from nue.model.torch import MinimalGPT, init_weights
 from nue.train.dataset import load_train_dataset
 
 from .base import Epoch, TrainingOptions, TrainingSession
