@@ -525,6 +525,7 @@ class PyTorchTrainer:
                             forward_elapsed = 0.0
                             backward_elapsed = 0.0
                             optimizer_elapsed = 0.0
+                            step_elapsed = 0.0
 
                         # Save model checkpoint
                         if (i_step + 1) % options.save_interval == 0:
