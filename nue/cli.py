@@ -17,11 +17,8 @@ import os
 from datetime import datetime
 
 import click
-from sentencepiece import SentencePieceTrainer
 
 from nue.common import BUILD_DIR
-from nue.corpus import build_corpus
-from nue.train import Epoch, TrainingOptions, TrainingSession
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -40,6 +37,8 @@ def main():
     help="Output file",
 )
 def build_corpus_command(output_file: str):
+    from nue.corpus import build_corpus
+
     with open(output_file, "w") as f:
         build_corpus(f)
 
@@ -69,6 +68,8 @@ def build_corpus_command(output_file: str):
     help="Input corpus file",
 )
 def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: int):
+    from sentencepiece import SentencePieceTrainer
+
     # Training options
     # https://github.com/google/sentencepiece/blob/master/doc/options.md
     SentencePieceTrainer.Train(
@@ -207,7 +208,7 @@ def train_command(
     log_validation_max_tokens: int = 50_000,
     override_base_lr: float | None = None,
 ):
-    from nue.train import PyTorchTrainer
+    from nue.train import Epoch, PyTorchTrainer, TrainingOptions, TrainingSession
 
     if model_dir is not None:
         click.secho(f"Resuming training from checkpoint {model_dir}", fg="green")
