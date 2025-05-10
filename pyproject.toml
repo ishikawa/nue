@@ -13,6 +13,7 @@ dependencies = [
     "datasets>=3.6.0",
     "sentencepiece==0.2.0",
     "termcolor>=2.3.0",
+    "yaspin>=3.1.0",
     # NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出ることがある
     # See: `CPU_EVALUATION_ON_MPS_BACKEND` in `train` module
     #
@@ -20,10 +21,13 @@ dependencies = [
     # https://github.com/pytorch/pytorch/issues/151667
     #"torch (==2.5.1)",
     "torch>=2.7.0",
+    "torchvision>=0.22.0",
+    # NOTE: We've checked that torch==2.8.0.dev20250509 and torchvision==0.22.0.dev20250509
+    #       are not fixed the issue above (NaNs in SDPA)
+    #"torch==2.8.0.dev20250509",
+    #"torchvision==0.22.0.dev20250509",
     "torchao>=0.11.0",
     "torchtune>=0.6.1",
-    "torchvision>=0.22.0",
-    "yaspin>=3.1.0",
 ]
 
 [dependency-groups]
@@ -32,3 +36,13 @@ dev = ["pyright>=1.1.400", "ruff>=0.11.9"]
 [tool.pyright]
 include = ["nue"]
 exclude = ["**/__pycache__"]
+
+[tool.uv.sources]
+#torch = [{ index = "pytorch-nightly-cpu" }]
+#torchvision = [{ index = "pytorch-nightly-cpu" }]
+
+
+[[tool.uv.index]]
+name = "pytorch-nightly-cpu"
+url = "https://download.pytorch.org/whl/nightly/cpu"
+explicit = true

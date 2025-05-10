@@ -45,7 +45,7 @@ from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
 # https://github.com/pytorch/pytorch/issues/151667
 #
 # このフラグを True にすると、MPS での評価時は CPU で推論する
-CPU_EVALUATION_ON_MPS_BACKEND = True
+CPU_EVALUATION_ON_MPS_BACKEND = False
 
 # Platform detection
 PLATFORM_MAC = "Darwin" in platform.system()
