@@ -3,17 +3,17 @@
 check: lint type-check
 
 format:
-	poetry run ruff format ./nue
+	uv run ruff format ./nue
 
 lint:
-	poetry run ruff check ./nue
+	uv run ruff check ./nue
 
 type-check:
-	poetry run pyright ./nue
+	uv run pyright ./nue
 
 # Training
 train-local:
-	poetry run nue train \
+	uv run python -m nue.cli train \
 		--batch-size 4 \
 		--lr 3e-4 \
 		--max-warmup-steps 20 \
@@ -23,4 +23,4 @@ train-local:
 		--log-validation-max-tokens 2048
 
 train:
-	poetry run nue train --batch-size 256
+	uv run python -m nue.cli train --batch-size 256
