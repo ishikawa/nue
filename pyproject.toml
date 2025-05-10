@@ -11,7 +11,7 @@ requires-python = "<4.0,>=3.10"
 dependencies = [
     "click>=8.1.8",
     "datasets>=3.6.0",
-    "sentencepiece>=0.2.0",
+    "sentencepiece==0.2.0",
     "termcolor>=2.3.0",
     # NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出ることがある
     # See: `CPU_EVALUATION_ON_MPS_BACKEND` in `train` module
@@ -28,9 +28,6 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pyright>=1.1.400", "ruff>=0.11.9"]
-
-[project.scripts]
-nue = "nue.cli:main"
 
 [tool.pyright]
 include = ["nue"]
