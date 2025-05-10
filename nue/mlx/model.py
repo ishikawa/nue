@@ -125,14 +125,14 @@ class TransformerBlock(nn.Module):
         return x
 
 
-class Nue(nn.Module):
+class NueLM(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
 
         self.config = config
         self.tok_emb = nn.Embedding(config.vocab_size, config.n_embed)
         self.blocks = nn.Sequential(
-            TransformerBlock(config) for _ in range(config.n_layers)
+            *[TransformerBlock(config) for _ in range(config.n_layers)]
         )
         self.ln_f = nn.LayerNorm(config.n_embed)
         self.head = nn.Linear(config.n_embed, config.vocab_size, bias=False)
@@ -151,10 +151,13 @@ class Nue(nn.Module):
     ) -> mx.array:
         # input_ids: [B, T], attention_mask: [B, T]
         x = self.tok_emb(input_ids)  # [B, T, D]
+
         for block in self.blocks:
             x = block(x, attention_mask=attention_mask)
+
         x = self.ln_f(x)
         logits = self.head(x)
+
         return logits
 
 

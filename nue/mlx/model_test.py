@@ -1,4 +1,4 @@
-from nue.mlx.model import Nue
+from nue.mlx.model import NueLM
 from nue.model.base import GPTConfig
 
 
@@ -11,6 +11,7 @@ def test_simple():
         n_layers=4,
         mlp_ratio=2,
     )
-    m = Nue(config)
+    m = NueLM(config)
     assert m
-    print(m.parameters())
+    # print(m.parameters())
+    assert len(m.blocks.layers) == config.n_layers
