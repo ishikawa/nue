@@ -300,17 +300,18 @@ class PyTorchTrainer:
                 )
 
         # 学習開始前に学習率を変更する（学習再開時に上書きしたい場合）
-        for i, param_group in enumerate(optimizer.param_groups):
-            param_group["lr"] = options.lr  # オプティマイザの現在の学習率をまず設定
+        if override_base_lr is not None:
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = override_base_lr
 
-        # スケジューラの base_lrs を変更
-        # LambdaLR の場合、base_lrs はリストなので、各要素を変更
-        for j in range(len(scheduler.base_lrs)):
-            scheduler.base_lrs[j] = options.lr
-        click.secho(
-            f"Optimizer and Scheduler base_lrs successfully set to: {options.lr}",
-            fg="cyan",
-        )
+            # スケジューラの base_lrs を変更
+            # LambdaLR の場合、base_lrs はリストなので、各要素を変更
+            for i in range(len(scheduler.base_lrs)):
+                scheduler.base_lrs[i] = override_base_lr
+            click.secho(
+                f"Optimizer and Scheduler base_lrs successfully set to: {override_base_lr}",
+                fg="cyan",
+            )
 
         click.secho("[6/7] Start training loop", fg="green", bold=True)
         model.train()
