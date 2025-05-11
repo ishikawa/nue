@@ -87,8 +87,18 @@ class MlxTrainer:
         # --------- 3) データセット準備 ---------
         def hf_dataset_to_buffer(dataset: Dataset) -> Any:
             dicts = []
-            for input_ids in dataset["input_ids"]:
-                dicts.append({"input_ids": input_ids})
+
+            with yaspin().cyan as spinner:
+                for i, example in enumerate(dataset):
+                    spinner.text = (
+                        f"Loading dataset into buffer ({i:,}/{len(dataset):,})"
+                    )
+
+                    dicts.append(
+                        {
+                            "input_ids": example["input_ids"]  # type: ignore
+                        }
+                    )
 
             assert isinstance(dicts, list)
             assert isinstance(dicts[0], dict)
