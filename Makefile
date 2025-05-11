@@ -1,6 +1,6 @@
 .PHONY: check format lint type-check
 
-check: lint type-check
+check: lint type-check test
 
 format:
 	uv run ruff format ./nue
