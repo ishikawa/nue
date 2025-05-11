@@ -29,7 +29,7 @@ from nue.mlx.model import NueLM
 from nue.model.base import GPTConfig
 from nue.train.base import TrainingOptions, TrainingSession
 from nue.train.dataset import load_train_dataset
-from nue.train.tokenizer import TOKENIZER
+from nue.train.tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
 from nue.utils import format_number_abbrev
 
 
@@ -92,6 +92,16 @@ class MlxTrainer:
 
             return mlx.data.buffer_from_vector(dicts)  # type: ignore
 
+        def buffer_to_stream(buffer: Any) -> Any:
+            return (
+                buffer.to_stream()
+                # Pad each sequence to the right
+                .pad_to_size(
+                    "input_ids", dim=0, size=options.ctx_len, pad_value=PAD_TOKEN_ID
+                )
+                .batch(options.batch_size)
+            )
+
         click.secho("[3/7] Prepare dataset", fg="green", bold=True)
         dataset, total_tokens = load_train_dataset(
             ctx_len=options.ctx_len,
@@ -118,3 +128,41 @@ class MlxTrainer:
             f"Loader created (train: {len(train_buffer):,} rows, val: {len(validation_buffer):,} rows)",
             fg="cyan",
         )
+
+        train_stream = buffer_to_stream(train_buffer)
+        validation_stream = buffer_to_stream(validation_buffer)
+
+        with yaspin().cyan as spinner:
+            for i, input_ids in enumerate(train_stream):
+                input_ids = mx.array(input_ids["input_ids"])
+
+                # 1) Build attention mask (boolean mask)
+                attn_mask = mx.array(input_ids != PAD_TOKEN_ID)
+
+                # 2) Create labels
+                # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
+                # - パディング部分は損失計算から除外する必要がある
+
+                # batch と同じ shape で全ての要素を IGNORE (損失計算で無視される値) で初期化
+                labels = mx.full(input_ids.shape, IGNORE_TOKEN_ID)
+
+                # input_ids を左シフトして labels に代入することで、
+                # labels[i] <- input_ids[i+1]
+                labels[:, :-1] = input_ids[:, 1:]
+
+                # labels の要素で PAD_ID となっている箇所を IGNORE にする
+                labels = mx.where(labels == PAD_TOKEN_ID, IGNORE_TOKEN_ID, labels)
+
+                # print(f"{i} batch: {input_ids}")
+                # print(f"{i} attn_mask: {attn_mask}")
+                # print(f"{i} labels: {labels}")
+
+                mx.eval(input_ids)
+                mx.eval(attn_mask)
+                mx.eval(labels)
+
+                logits = self.model(input_ids, attention_mask=attn_mask)
+                print(f"{i} logits: {logits}")
+
+                if i >= 5:
+                    break

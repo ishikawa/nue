@@ -27,7 +27,7 @@ class FeedForward(nn.Module):
         self.fc1 = nn.Linear(cfg.n_embed, inner)
         self.fc2 = nn.Linear(inner, cfg.n_embed)
 
-    def forward(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array) -> mx.array:
         return self.fc2(nn.gelu(self.fc1(x)))
 
 
@@ -110,7 +110,7 @@ class TransformerBlock(nn.Module):
         self.ln2 = nn.LayerNorm(cfg.n_embed)
         self.mlp = FeedForward(cfg)
 
-    def forward(
+    def __call__(
         self, x: mx.array, *, attention_mask: mx.array | None = None
     ) -> mx.array:
         # pass attention_mask to SelfAttention
@@ -123,13 +123,26 @@ class TransformerBlock(nn.Module):
         return x
 
 
+class TransformerBlocks(nn.Module):
+    def __init__(self, *modules: nn.Module):
+        super().__init__()
+        self.layers = list(modules)
+
+    def __call__(
+        self, x: mx.array, *, attention_mask: mx.array | None = None
+    ) -> mx.array:
+        for m in self.layers:
+            x = m(x, attention_mask=attention_mask)
+        return x
+
+
 class NueLM(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
 
         self.config = config
         self.tok_emb = nn.Embedding(config.vocab_size, config.n_embed)
-        self.blocks = nn.Sequential(
+        self.blocks = TransformerBlocks(
             *[TransformerBlock(config) for _ in range(config.n_layers)]
         )
         self.ln_f = nn.LayerNorm(config.n_embed)
@@ -150,10 +163,7 @@ class NueLM(nn.Module):
     ) -> mx.array:
         # input_ids: [B, T], attention_mask: [B, T]
         x = self.tok_emb(input_ids)  # [B, T, D]
-
-        for block in self.blocks:
-            x = block(x, attention_mask=attention_mask)
-
+        x = self.blocks(x, attention_mask=attention_mask)
         x = self.ln_f(x)
         logits = self.head(x)
 
