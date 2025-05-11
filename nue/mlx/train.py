@@ -106,9 +106,10 @@ class MlxTrainer:
 
             return mlx.data.buffer_from_vector(dicts)  # type: ignore
 
-        def buffer_to_stream(buffer: Any) -> Any:
+        def hf_dataset_to_stream(dataset: Dataset) -> Any:
             return (
-                buffer.to_stream()
+                hf_dataset_to_buffer(dataset)
+                .to_stream()
                 # Pad each sequence to the right
                 .pad_to_size(
                     "input_ids", dim=0, size=options.ctx_len, pad_value=PAD_TOKEN_ID
@@ -134,17 +135,14 @@ class MlxTrainer:
         validation_dataset = train_and_test_datasets["test"]
         train_dataset = train_and_test_datasets["train"]
 
-        # Load dataset into mlx buffer
-        train_buffer = hf_dataset_to_buffer(train_dataset)
-        validation_buffer = hf_dataset_to_buffer(validation_dataset)
-
         click.secho(
-            f"Loader created (train: {len(train_buffer):,} rows, val: {len(validation_buffer):,} rows)",
+            f"Loader created (train: {len(train_dataset):,} rows, val: {len(validation_dataset):,} rows)",
             fg="cyan",
         )
 
-        train_stream = buffer_to_stream(train_buffer)
-        validation_stream = buffer_to_stream(validation_buffer)
+        # Load dataset into mlx buffer
+        train_stream = hf_dataset_to_stream(train_dataset)
+        validation_stream = hf_dataset_to_stream(validation_dataset)
 
         # --------- 4) Optimizer & Scheduler ---------
         click.secho("[4/7] Prepare optimizer & scheduler", fg="bright_green", bold=True)
