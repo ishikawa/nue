@@ -148,7 +148,11 @@ class MlxTrainer:
             fg="cyan",
         )
 
+        loss_and_grad_fn = nn.value_and_grad(self.model, cross_entropy_mean)
+
         click.secho("[5/7] Training from scratch", fg="bright_green", bold=True)
+        self.model.train()
+
         with yaspin().cyan as spinner:
 
             def set_spinner_text(
@@ -202,9 +206,8 @@ class MlxTrainer:
                     mx.eval(labels)
 
                     logits = self.model(input_ids, attention_mask=attn_mask)
+                    loss, grads = loss_and_grad_fn(logits, labels)
 
-                    # --- 損失計算
-                    loss = cross_entropy_mean(logits, labels)
                     logits_mean = float(logits.abs().mean())
 
                     set_spinner_text(
@@ -223,7 +226,7 @@ def cross_entropy_mean(
     logits: mx.array,  # (B, T, V)
     labels: mx.array,  # (B, T)
     label_smoothing: float = 0.0,
-) -> float:
+) -> mx.array:
     """
     Compute the cross-entropy loss mean. Ignores IGNORE_TOKEN_ID.
     """
@@ -246,4 +249,4 @@ def cross_entropy_mean(
 
     # mask で無視する部分を考慮しつつ平均を取る
     per_token_loss = per_token_loss * mask.astype(per_token_loss.dtype)
-    return float(mx.sum(per_token_loss) / mx.maximum(mx.sum(mask), 1))
+    return mx.sum(per_token_loss) / mx.maximum(mx.sum(mask), 1)
