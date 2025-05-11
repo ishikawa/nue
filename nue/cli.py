@@ -17,11 +17,8 @@ import os
 from datetime import datetime
 
 import click
-from sentencepiece import SentencePieceTrainer
 
 from nue.common import BUILD_DIR
-from nue.corpus import build_corpus
-from nue.train import Epoch, TrainingOptions, TrainingSession
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -40,6 +37,8 @@ def main():
     help="Output file",
 )
 def build_corpus_command(output_file: str):
+    from nue.corpus import build_corpus
+
     with open(output_file, "w") as f:
         build_corpus(f)
 
@@ -69,6 +68,8 @@ def build_corpus_command(output_file: str):
     help="Input corpus file",
 )
 def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: int):
+    from sentencepiece import SentencePieceTrainer
+
     # Training options
     # https://github.com/google/sentencepiece/blob/master/doc/options.md
     SentencePieceTrainer.Train(
@@ -186,6 +187,13 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     default=None,
     help="Override base learning rate.",
 )
+@click.option(
+    "--framework",
+    "framework",
+    type=click.Choice(["torch", "mlx"], case_sensitive=False),
+    default="torch",
+    help="Framework to use.",
+)
 def train_command(
     n_epochs: int,
     batch_size: int,
@@ -206,8 +214,9 @@ def train_command(
     override_data_size: str | None = None,
     log_validation_max_tokens: int = 50_000,
     override_base_lr: float | None = None,
+    framework: str = "torch",
 ):
-    from nue.train import PyTorchTrainer
+    from nue.train import Epoch, TrainingOptions, TrainingSession
 
     if model_dir is not None:
         click.secho(f"Resuming training from checkpoint {model_dir}", fg="green")
@@ -256,7 +265,7 @@ def train_command(
             )
 
     click.secho(
-        "Using torch trainer: "
+        f"Using {framework} trainer: "
         + f"n_epochs={training_options.n_epochs}, batch_size={training_options.batch_size}, ctx_length={training_options.ctx_len}, "
         + f"n_embed={training_options.n_embed}, n_heads={training_options.n_heads}, "
         + f"n_layers={training_options.n_layers}, mlp_ratio={training_options.mlp_ratio}, "
@@ -265,13 +274,26 @@ def train_command(
         fg="white",
     )
 
-    trainer = PyTorchTrainer(training_options)
-    trainer.train(
-        training_session,
-        measure_time=measure_time,
-        log_validation_max_tokens=log_validation_max_tokens,
-        override_base_lr=override_base_lr,
-    )
+    if framework == "torch":
+        from nue.train.torch import PyTorchTrainer
+
+        trainer = PyTorchTrainer(training_options)
+        trainer.train(
+            training_session,
+            measure_time=measure_time,
+            log_validation_max_tokens=log_validation_max_tokens,
+            override_base_lr=override_base_lr,
+        )
+    elif framework == "mlx":
+        from nue.mlx.train import MlxTrainer
+
+        trainer = MlxTrainer(training_options)
+        trainer.train(
+            training_session,
+            measure_time=measure_time,
+            log_validation_max_tokens=log_validation_max_tokens,
+            override_base_lr=override_base_lr,
+        )
 
 
 main.add_command(build_corpus_command)

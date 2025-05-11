@@ -1,4 +1,4 @@
-name: CI
+name: CI on macOS
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
 
     strategy:
       matrix:
@@ -36,12 +36,12 @@ jobs:
 
       - name: Install dependencies
         if: steps.cache-venv.outputs.cache-hit != 'true'
-        run: uv sync
+        run: uv sync --extra mlx
 
       - name: Run checks
         run: |
-          uv run pyright ./nue/*.py ./nue/model ./nue/train 
-          uv run ruff check --exclude nue/mlx
+          uv run pyright ./nue/mlx
+          uv run ruff check nue/mlx
+
       - name: Run tests
-        run: |
-          uv run pytest ./nue/*.py ./nue/model ./nue/train
+        run: uv run pytest ./nue/mlx
