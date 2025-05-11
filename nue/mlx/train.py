@@ -15,7 +15,7 @@
 import dataclasses
 import json
 import os
-from typing import Any
+from typing import Any, cast
 
 import click
 import mlx.core as mx
@@ -164,5 +164,40 @@ class MlxTrainer:
                 logits = self.model(input_ids, attention_mask=attn_mask)
                 print(f"{i} logits: {logits}")
 
+                # --- 損失計算
+
+                loss = cross_entropy_mean(logits, labels)
+                print(f"{i} loss: {loss}")
+
                 if i >= 5:
                     break
+
+
+def cross_entropy_mean(
+    logits: mx.array,  # (B, T, V)
+    labels: mx.array,  # (B, T)
+    label_smoothing: float = 0.0,
+):
+    """
+    Compute the cross-entropy loss mean. Ignores IGNORE_TOKEN_ID.
+    """
+    vocab_size = logits.shape[-1]
+
+    # logits と labels の shape を揃える
+    logits = logits.reshape(-1, vocab_size)  # shape = (B*T, V)
+    labels = labels.reshape(-1)  # shape = (B*T,)
+
+    # IGNORE_TOKEN_ID を損失計算から除外するために、
+    # IGNORE_TOKEN_ID の部分を 0 にする
+    mask = cast(mx.array, labels != IGNORE_TOKEN_ID)
+    safe_labels = mx.where(mask, labels, 0)
+
+    # 各トークンごとの loss 値
+    # shape: (B*T,)
+    per_token_loss = nn.losses.cross_entropy(
+        logits, safe_labels, label_smoothing=label_smoothing, reduction="none"
+    )
+
+    # mask で無視する部分を考慮しつつ平均を取る
+    per_token_loss = per_token_loss * mask.astype(per_token_loss.dtype)
+    return mx.sum(per_token_loss) / mx.maximum(mx.sum(mask), 1)
