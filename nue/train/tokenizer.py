@@ -16,12 +16,12 @@ from sentencepiece import SentencePieceProcessor
 
 from nue.common import BUILD_DIR
 
-# グローバルにロードしておくと子プロセスが継承できる
+# Put global tokenizer to make child process inherit
 TOKENIZER = SentencePieceProcessor()
 TOKENIZER.Load(str(BUILD_DIR / "tokenizer.model"))
 
-PAD_TOKEN_ID: int = TOKENIZER.pad_id()  # 例: 0
-IGNORE_TOKEN_ID = -100  # CrossEntropyLoss が無視する値
+PAD_TOKEN_ID: int = TOKENIZER.pad_id()
+IGNORE_TOKEN_ID = -100
 
 assert PAD_TOKEN_ID is not None
 assert isinstance(PAD_TOKEN_ID, int)
