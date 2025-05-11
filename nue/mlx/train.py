@@ -16,6 +16,7 @@ import dataclasses
 import json
 import math
 import os
+import time
 from typing import Any, Callable, Iterable, Optional, cast
 
 import click
@@ -199,14 +200,38 @@ class MlxTrainer:
                     + ")"
                 )
 
-            total_loss = 0.0
             epoch_loss = 0.0
+            total_loss = 0.0
+
+            t0 = 0.0
+            t1 = 0.0
+            t2 = 0.0
+            t3 = 0.0
+            t4 = 0.0
+
+            io_elapsed = 0.0
+            forward_elapsed = 0.0
+            backward_elapsed = 0.0
+            optimizer_elapsed = 0.0
+            step_elapsed = 0.0
 
             i_step = 0
 
             for i_epoch in range(0, options.n_epochs):
-                for input_ids in train_stream:
-                    input_ids = mx.array(input_ids["input_ids"])
+                loader_iter = iter(train_stream)
+
+                while True:
+                    if measure_time:
+                        mx.synchronize()
+                        t0 = time.perf_counter()
+
+                    batch = next(loader_iter)
+
+                    if measure_time:
+                        mx.synchronize()
+                        t1 = time.perf_counter()
+
+                    input_ids = mx.array(batch["input_ids"])
 
                     # 1) Build attention mask (boolean mask)
                     attn_mask = mx.array(input_ids != PAD_TOKEN_ID)
@@ -230,6 +255,11 @@ class MlxTrainer:
                     mx.eval(labels)
 
                     logits = self.model(input_ids, attention_mask=attn_mask)
+
+                    if measure_time:
+                        mx.synchronize()
+                        t2 = time.perf_counter()
+
                     loss, grads = loss_and_grad_fn(logits, labels)
 
                     # Update the model with the gradients. So far no computation has happened.
@@ -237,6 +267,10 @@ class MlxTrainer:
 
                     # Compute the new parameters but also the optimizer state.
                     mx.eval(self.model.parameters(), optimizer.state)
+
+                    if measure_time:
+                        mx.synchronize()
+                        t3 = time.perf_counter()
 
                     logits_mean = float(logits.abs().mean())
                     current_lr = float(lr_scheduler(mx.array(i_step)))
@@ -249,8 +283,18 @@ class MlxTrainer:
                         logits_mean=logits_mean,
                     )
 
+                    if measure_time:
+                        mx.synchronize()
+                        t4 = time.perf_counter()
+
                     total_loss += loss.item()
                     epoch_loss += loss.item()
+
+                    io_elapsed += t1 - t0
+                    forward_elapsed += t2 - t1
+                    backward_elapsed += t3 - t2
+                    optimizer_elapsed += t4 - t3
+                    step_elapsed += t4 - t0
 
                     # Log training progress
                     if (i_step + 1) % options.log_interval == 0:
@@ -293,9 +337,23 @@ class MlxTrainer:
                         current_lr = float(lr_scheduler(mx.array(i_step)))
                         progress += f"{colored('lr=', 'cyan')}{current_lr:.6f} "
 
+                        if measure_time:
+                            progress += "("
+                            progress += f"{step_elapsed / options.log_interval:.3f}s "
+                            progress += f"{colored('io=', 'cyan')}{io_elapsed / options.log_interval:.3f}s "
+                            progress += f"{colored('forward=', 'cyan')}{forward_elapsed / options.log_interval:.3f}s "
+                            progress += f"{colored('backward=', 'cyan')}{backward_elapsed / options.log_interval:.3f}s "
+                            progress += f"{colored('optimizer=', 'cyan')}{optimizer_elapsed / options.log_interval:.3f}s"
+                            progress += ")"
+
                         spinner.write(progress)
 
                         total_loss = 0.0
+                        io_elapsed = 0.0
+                        forward_elapsed = 0.0
+                        backward_elapsed = 0.0
+                        optimizer_elapsed = 0.0
+                        step_elapsed = 0.0
 
                     i_step += 1
 
