@@ -11,20 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from nue.mlx.model import NueLM
-from nue.model.base import GPTConfig
 
 
-def test_simple():
-    config = GPTConfig(
-        vocab_size=1000,
-        ctx_len=128,
-        n_embed=4,
-        n_heads=2,
-        n_layers=4,
-        mlp_ratio=2,
-    )
-    m = NueLM(config)
-    assert m
-    # print(m.parameters())
-    assert len(m.blocks.layers) == config.n_layers
+def format_number_abbrev(n: int) -> str:
+    """
+    Convert a number to a string with an abbreviation (K, M, B).
+    """
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.1f}B"
+    elif n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    elif n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    else:
+        return str(n)

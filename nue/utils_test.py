@@ -11,20 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from nue.mlx.model import NueLM
-from nue.model.base import GPTConfig
+
+from .utils import format_number_abbrev
 
 
-def test_simple():
-    config = GPTConfig(
-        vocab_size=1000,
-        ctx_len=128,
-        n_embed=4,
-        n_heads=2,
-        n_layers=4,
-        mlp_ratio=2,
-    )
-    m = NueLM(config)
-    assert m
-    # print(m.parameters())
-    assert len(m.blocks.layers) == config.n_layers
+def test_format_number_abbrev():
+    assert format_number_abbrev(1000) == "1.0K"
+    assert format_number_abbrev(1000000) == "1.0M"
+    assert format_number_abbrev(1000000000) == "1.0B"
