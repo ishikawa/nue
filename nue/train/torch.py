@@ -35,7 +35,7 @@ from yaspin.core import Yaspin
 
 from nue.model.base import GPTConfig
 from nue.model.torch import MinimalGPT, init_weights
-from nue.train.dataset import load_train_dataset
+from nue.train.dataset import load_train_and_validation_dataset, load_train_dataset
 
 from .base import Epoch, TrainingOptions, TrainingSession
 from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
@@ -150,19 +150,19 @@ class PyTorchTrainer:
 
         # --------- 3) データセット準備 ---------
         click.secho("[3/7] Prepare dataset", fg="green", bold=True)
-        dataset = load_train_dataset(
+        dataset_result = load_train_and_validation_dataset(
             ctx_len=options.ctx_len,
             chunk_overlap_len=options.chunk_overlap_len,
             override_data_size=options.override_data_size,
         )
 
-        # 合計トークン数を計算
-        total_tokens = sum(dataset["num_tokens"])
+        total_tokens = dataset_result.total_tokens
 
-        # train/test split
-        train_and_test_datasets = dataset.train_test_split(test_size=0.05)
-        validation_dataset = train_and_test_datasets["test"]
-        dataset = train_and_test_datasets["train"]
+        dataset = dataset_result.train_dataset
+        validation_dataset = dataset_result.validation_dataset
+
+        dataset.set_format(type="torch", columns=["input_ids"])
+        validation_dataset.set_format(type="torch", columns=["input_ids"])
 
         # DataLoader
         # - train_loader のみ並列化とメモリ固定
