@@ -35,7 +35,8 @@ from yaspin.core import Yaspin
 
 from nue.model.base import GPTConfig
 from nue.model.torch import MinimalGPT, init_weights
-from nue.train.dataset import load_train_and_validation_dataset, load_train_dataset
+from nue.train.dataset import load_train_and_validation_dataset
+from nue.utils import format_number_abbrev
 
 from .base import Epoch, TrainingOptions, TrainingSession
 from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
@@ -158,10 +159,10 @@ class PyTorchTrainer:
 
         total_tokens = dataset_result.total_tokens
 
-        dataset = dataset_result.train_dataset
+        train_dataset = dataset_result.train_dataset
         validation_dataset = dataset_result.validation_dataset
 
-        dataset.set_format(type="torch", columns=["input_ids"])
+        train_dataset.set_format(type="torch", columns=["input_ids"])
         validation_dataset.set_format(type="torch", columns=["input_ids"])
 
         # DataLoader
@@ -173,7 +174,7 @@ class PyTorchTrainer:
             data_loader_num_workers = os.cpu_count() or 0
 
         train_loader = DataLoader(
-            dataset,  # type: ignore
+            train_dataset,  # type: ignore
             batch_size=options.batch_size,
             shuffle=True,
             collate_fn=collate_pad,
@@ -193,7 +194,7 @@ class PyTorchTrainer:
             fg="cyan",
         )
         click.secho(
-            f"Loader created (train: {len(dataset):,} rows, val: {len(validation_dataset):,} rows)",
+            f"Loader created (train: {len(train_dataset):,} rows, val: {len(validation_dataset):,} rows)",
             fg="cyan",
         )
 
@@ -214,7 +215,9 @@ class PyTorchTrainer:
         # --- スケジューラーの設定 ---
         # おおよその総学習ステップ数を計算 (エポック数 x 1エポックあたりのステップ数)
         # len(dataset) はチャンク化後の訓練データセットのサンプル数
-        num_training_steps_per_epoch = math.ceil(len(dataset) / options.batch_size)
+        num_training_steps_per_epoch = math.ceil(
+            len(train_dataset) / options.batch_size
+        )
         num_training_steps = num_training_steps_per_epoch * options.n_epochs
         num_warmup_steps = int(min(num_training_steps * 0.05, options.max_warmup_steps))
 
@@ -687,14 +690,3 @@ def detect_device() -> torch.device:
         return torch.device("mps")
     else:
         return torch.device("cpu")
-
-
-def format_number_abbrev(n: int) -> str:
-    if n >= 1_000_000_000:
-        return f"{n / 1_000_000_000:.1f}B"
-    elif n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    elif n >= 1_000:
-        return f"{n / 1_000:.1f}K"
-    else:
-        return str(n)

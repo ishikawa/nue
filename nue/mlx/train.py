@@ -25,6 +25,7 @@ from nue.model.base import GPTConfig
 from nue.train.base import TrainingOptions, TrainingSession
 from nue.train.dataset import load_train_and_validation_dataset, load_train_dataset
 from nue.train.tokenizer import TOKENIZER
+from nue.utils import format_number_abbrev
 
 
 class MlxTrainer:
@@ -85,3 +86,12 @@ class MlxTrainer:
         train_dataset = dataset_result.train_dataset
         validation_dataset = dataset_result.validation_dataset
         total_tokens = dataset_result.total_tokens
+
+        click.secho(
+            f"Total tokens: {format_number_abbrev(total_tokens)} ({total_tokens:,})",
+            fg="cyan",
+        )
+        click.secho(
+            f"Loader created (train: {len(train_dataset):,} rows, val: {len(validation_dataset):,} rows)",
+            fg="cyan",
+        )

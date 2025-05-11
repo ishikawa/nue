@@ -187,6 +187,13 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     default=None,
     help="Override base learning rate.",
 )
+@click.option(
+    "--framework",
+    "framework",
+    type=click.Choice(["torch", "mlx"], case_sensitive=False),
+    default="torch",
+    help="Framework to use.",
+)
 def train_command(
     n_epochs: int,
     batch_size: int,
@@ -207,9 +214,9 @@ def train_command(
     override_data_size: str | None = None,
     log_validation_max_tokens: int = 50_000,
     override_base_lr: float | None = None,
+    framework: str = "torch",
 ):
     from nue.train import Epoch, TrainingOptions, TrainingSession
-    from nue.train.torch import PyTorchTrainer
 
     if model_dir is not None:
         click.secho(f"Resuming training from checkpoint {model_dir}", fg="green")
@@ -267,13 +274,26 @@ def train_command(
         fg="white",
     )
 
-    trainer = PyTorchTrainer(training_options)
-    trainer.train(
-        training_session,
-        measure_time=measure_time,
-        log_validation_max_tokens=log_validation_max_tokens,
-        override_base_lr=override_base_lr,
-    )
+    if framework == "torch":
+        from nue.train.torch import PyTorchTrainer
+
+        trainer = PyTorchTrainer(training_options)
+        trainer.train(
+            training_session,
+            measure_time=measure_time,
+            log_validation_max_tokens=log_validation_max_tokens,
+            override_base_lr=override_base_lr,
+        )
+    elif framework == "mlx":
+        from nue.mlx.train import MlxTrainer
+
+        trainer = MlxTrainer(training_options)
+        trainer.train(
+            training_session,
+            measure_time=measure_time,
+            log_validation_max_tokens=log_validation_max_tokens,
+            override_base_lr=override_base_lr,
+        )
 
 
 main.add_command(build_corpus_command)
