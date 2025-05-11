@@ -17,11 +17,10 @@ import json
 import math
 import os
 import time
-from typing import Any, Callable, Iterable, Optional, cast
+from typing import Any, Callable, Iterable, Iterator, Optional, cast
 
 import click
 import mlx.core as mx
-import mlx.data
 import mlx.nn as nn
 import mlx.optimizers
 import numpy as np
@@ -128,7 +127,7 @@ class MlxTrainer:
             fg="cyan",
         )
 
-        dataset.set_format(type="numpy", columns=["input_ids"])
+        # dataset.set_format(type="numpy", columns=["input_ids"])
 
         # Split into train and validation datasets
         train_and_test_datasets = dataset.train_test_split(test_size=0.05)
@@ -141,8 +140,13 @@ class MlxTrainer:
         )
 
         # Load dataset into mlx buffer
-        train_stream = hf_dataset_to_stream(train_dataset)
-        validation_stream = hf_dataset_to_stream(validation_dataset)
+        # train_stream = hf_dataset_to_stream(train_dataset)
+        # validation_stream = hf_dataset_to_stream(validation_dataset)
+
+        train_data_loader = HFDataloader(train_dataset, batch_size=options.batch_size)
+        validation_data_loader = HFDataloader(
+            validation_dataset, batch_size=options.batch_size
+        )
 
         # --------- 4) Optimizer & Scheduler ---------
         click.secho("[4/7] Prepare optimizer & scheduler", fg="bright_green", bold=True)
@@ -229,7 +233,7 @@ class MlxTrainer:
             i_step = 0
 
             for i_epoch in range(0, options.n_epochs):
-                loader_iter = iter(train_stream)
+                loader_iter = iter(train_data_loader)
 
                 while True:
                     if measure_time:
@@ -238,28 +242,11 @@ class MlxTrainer:
 
                     batch = next(loader_iter)
 
-                    input_ids = mx.array(batch["input_ids"])
+                    batch = collate(batch, config=self.config)
 
-                    # 1) Build attention mask (boolean mask)
-                    attn_mask = mx.array(input_ids != PAD_TOKEN_ID)
-
-                    # 2) Create labels
-                    # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
-                    # - パディング部分は損失計算から除外する必要がある
-
-                    # batch と同じ shape で全ての要素を IGNORE (損失計算で無視される値) で初期化
-                    labels = mx.full(input_ids.shape, IGNORE_TOKEN_ID)
-
-                    # input_ids を左シフトして labels に代入することで、
-                    # labels[i] <- input_ids[i+1]
-                    labels[:, :-1] = input_ids[:, 1:]
-
-                    # labels の要素で PAD_ID となっている箇所を IGNORE にする
-                    labels = mx.where(labels == PAD_TOKEN_ID, IGNORE_TOKEN_ID, labels)
-
-                    mx.eval(input_ids)
-                    mx.eval(attn_mask)
-                    mx.eval(labels)
+                    input_ids = batch["input_ids"]
+                    attn_mask = batch["attention_mask"]
+                    labels = batch["labels"]
 
                     if measure_time:
                         mx.synchronize()
@@ -312,7 +299,7 @@ class MlxTrainer:
 
                             # Evaluate on validation dataset
                             val_loss = self.evaluate(
-                                validation_stream,
+                                validation_data_loader,
                                 max_tokens=log_validation_max_tokens,
                             )
 
@@ -396,7 +383,7 @@ class MlxTrainer:
 
     def evaluate(
         self,
-        data_stream: Any,  # mlx.data.Stream
+        data_loader: "HFDataloader",
         *,
         max_tokens: Optional[int] = None,
     ) -> float:
@@ -405,29 +392,12 @@ class MlxTrainer:
         total_loss = 0.0
         total_tokens = 0
 
-        for batch in data_stream:
-            input_ids = mx.array(batch["input_ids"])
+        for batch in data_loader:
+            batch = collate(batch, config=self.config)
 
-            # 1) Build attention mask (boolean mask)
-            attn_mask = mx.array(input_ids != PAD_TOKEN_ID)
-
-            # 2) Create labels
-            # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
-            # - パディング部分は損失計算から除外する必要がある
-
-            # batch と同じ shape で全ての要素を IGNORE (損失計算で無視される値) で初期化
-            labels = mx.full(input_ids.shape, IGNORE_TOKEN_ID)
-
-            # input_ids を左シフトして labels に代入することで、
-            # labels[i] <- input_ids[i+1]
-            labels[:, :-1] = input_ids[:, 1:]
-
-            # labels の要素で PAD_ID となっている箇所を IGNORE にする
-            labels = mx.where(labels == PAD_TOKEN_ID, IGNORE_TOKEN_ID, labels)
-
-            mx.eval(input_ids)
-            mx.eval(attn_mask)
-            mx.eval(labels)
+            input_ids = batch["input_ids"]
+            attn_mask = batch["attention_mask"]
+            labels = batch["labels"]
 
             logits = self.model(
                 input_ids,
@@ -519,3 +489,58 @@ def get_cosine_schedule_with_warmup(
         return mx.maximum(mx.array(0.0), cosine_lr_multiple) * base_lr
 
     return schedule
+
+
+class HFDataloader:
+    def __init__(
+        self,
+        dataset: Dataset,
+        *,
+        batch_size: int,
+    ):
+        self.dataset = dataset
+        self.batch_size = batch_size
+
+    def __iter__(self) -> Iterator[Dataset]:
+        for start in range(0, len(self.dataset), self.batch_size):
+            batch = self.dataset.select(range(start, start + self.batch_size))
+            yield batch
+
+
+def collate(batch: Dataset, *, config: GPTConfig) -> dict[str, mx.array]:
+    input_ids = [mx.array(b["input_ids"]) for b in batch]  # type: ignore
+    input_ids = [
+        mx.pad(
+            input_id,
+            pad_width=(
+                0,
+                config.ctx_len - input_id.shape[0],
+            ),
+            constant_values=PAD_TOKEN_ID,
+        )
+        for input_id in input_ids
+    ]
+    input_ids = mx.array(input_ids)
+
+    # 2) Build attention mask (boolean mask)
+    attn_mask = mx.array(input_ids != PAD_TOKEN_ID)
+
+    # 3) Create labels
+    # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
+    # - パディング部分は損失計算から除外する必要がある
+
+    # batch と同じ shape で全ての要素を IGNORE (損失計算で無視される値) で初期化
+    labels = mx.full(input_ids.shape, IGNORE_TOKEN_ID)
+
+    # input_ids を左シフトして labels に代入することで、
+    # labels[i] <- input_ids[i+1]
+    labels[:, :-1] = input_ids[:, 1:]
+
+    # labels の要素で PAD_ID となっている箇所を IGNORE にする
+    labels = mx.where(labels == PAD_TOKEN_ID, IGNORE_TOKEN_ID, labels)
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attn_mask,
+        "labels": labels,
+    }
