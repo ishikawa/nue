@@ -21,6 +21,7 @@ from typing import Any, Callable, Iterable, Iterator, Optional, cast
 
 import click
 import mlx.core as mx
+import mlx.data
 import mlx.nn as nn
 import mlx.optimizers
 import numpy as np
@@ -105,10 +106,20 @@ class MlxTrainer:
 
             return mlx.data.buffer_from_vector(dicts)  # type: ignore
 
+        def build_hf_dataset_iter_fn(
+            dataset: Dataset,
+        ) -> Callable[[], Iterator[dict[str, Any]]]:
+            def iter_fn() -> Iterator[dict[str, Any]]:
+                for example in dataset:
+                    yield {
+                        "input_ids": example["input_ids"]  # type: ignore
+                    }
+
+            return iter_fn
+
         def hf_dataset_to_stream(dataset: Dataset) -> Any:
             return (
-                hf_dataset_to_buffer(dataset)
-                .to_stream()
+                mlx.data.stream_python_iterable(build_hf_dataset_iter_fn(dataset))  # type: ignore
                 # Pad each sequence to the right
                 .pad_to_size(
                     "input_ids", dim=0, size=options.ctx_len, pad_value=PAD_TOKEN_ID
@@ -140,13 +151,8 @@ class MlxTrainer:
         )
 
         # Load dataset into mlx buffer
-        # train_stream = hf_dataset_to_stream(train_dataset)
-        # validation_stream = hf_dataset_to_stream(validation_dataset)
-
-        train_data_loader = HFDataloader(train_dataset, batch_size=options.batch_size)
-        validation_data_loader = HFDataloader(
-            validation_dataset, batch_size=options.batch_size
-        )
+        train_stream = hf_dataset_to_stream(train_dataset)
+        validation_stream = hf_dataset_to_stream(validation_dataset)
 
         # --------- 4) Optimizer & Scheduler ---------
         click.secho("[4/7] Prepare optimizer & scheduler", fg="bright_green", bold=True)
@@ -233,7 +239,7 @@ class MlxTrainer:
             i_step = 0
 
             for i_epoch in range(0, options.n_epochs):
-                loader_iter = iter(train_data_loader)
+                loader_iter = iter(train_stream)
 
                 while True:
                     if measure_time:
@@ -299,7 +305,7 @@ class MlxTrainer:
 
                             # Evaluate on validation dataset
                             val_loss = self.evaluate(
-                                validation_data_loader,
+                                validation_stream,
                                 max_tokens=log_validation_max_tokens,
                             )
 
@@ -512,19 +518,8 @@ class HFDataloader:
             yield rows
 
 
-def collate(
-    batch: list[dict[str, np.ndarray]], *, config: GPTConfig
-) -> dict[str, mx.array]:
-    B = len(batch)
-    T = config.ctx_len
-
-    # ---------- 1) パディング ----------
-    pad_arr = np.full((B, T), PAD_TOKEN_ID, dtype=np.int32)
-    for i, b in enumerate(batch):
-        L = min(len(b["input_ids"]), T)
-        pad_arr[i, :L] = b["input_ids"][:L]
-
-    input_ids = mx.array(pad_arr)
+def collate(batch: dict[str, Any], *, config: GPTConfig) -> dict[str, mx.array]:
+    input_ids = mx.array(batch["input_ids"])
 
     # 2) Build attention mask (boolean mask)
     attn_mask = mx.array(input_ids != PAD_TOKEN_ID)
