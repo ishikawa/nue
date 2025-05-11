@@ -265,7 +265,7 @@ def train_command(
             )
 
     click.secho(
-        "Using torch trainer: "
+        f"Using {framework} trainer: "
         + f"n_epochs={training_options.n_epochs}, batch_size={training_options.batch_size}, ctx_length={training_options.ctx_len}, "
         + f"n_embed={training_options.n_embed}, n_heads={training_options.n_heads}, "
         + f"n_layers={training_options.n_layers}, mlp_ratio={training_options.mlp_ratio}, "

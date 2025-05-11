@@ -297,7 +297,7 @@ class MlxTrainer:
 
                         total_loss = 0.0
 
-                i_step += 1
+                    i_step += 1
 
     def _generate(self, idx: mx.array, max_new_tokens: int = 32):
         """Greedy text generation (for demo)."""
