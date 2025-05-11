@@ -93,7 +93,9 @@ def __map_tokenize_to_chunk_lists(
 
 def load_train_dataset(
     *, ctx_len: int, chunk_overlap_len: int, override_data_size: Optional[str] = None
-) -> Dataset:
+) -> tuple[
+    Dataset, int  # total_tokens
+]:
     datasets_list: list[Dataset] = []
 
     for dataset_config in DATASET_LIST:
@@ -173,19 +175,12 @@ def load_train_dataset(
 
     final_dataset = concatenate_datasets(datasets_list)
 
-    # 合計トークン数
-    if "num_tokens" not in final_dataset.column_names:
-        print(
-            colored(
-                "Warning: 'num_tokens' column not found after flattening. Re-calculating.",
-                "yellow",
-            )
-        )
-        final_dataset = final_dataset.map(
-            lambda x: {"num_tokens": len(x["input_ids"])}, num_proc=os.cpu_count()
-        )
+    # 合計トークン数を計算
+    total_tokens = sum(final_dataset["num_tokens"])
 
-    return final_dataset
+    final_dataset = final_dataset.remove_columns("num_tokens")
+
+    return final_dataset, total_tokens
 
 
 @dataclass(frozen=True)
@@ -193,27 +188,3 @@ class TrainAndValidationDatasetResult:
     total_tokens: int
     train_dataset: Dataset
     validation_dataset: Dataset
-
-
-def load_train_and_validation_dataset(
-    *, ctx_len: int, chunk_overlap_len: int, override_data_size: Optional[str] = None
-) -> TrainAndValidationDatasetResult:
-    dataset = load_train_dataset(
-        ctx_len=ctx_len,
-        chunk_overlap_len=chunk_overlap_len,
-        override_data_size=override_data_size,
-    )
-
-    # 合計トークン数を計算
-    total_tokens = sum(dataset["num_tokens"])
-
-    # train/test split
-    train_and_test_datasets = dataset.train_test_split(test_size=0.05)
-    validation_dataset = train_and_test_datasets["test"]
-    dataset = train_and_test_datasets["train"]
-
-    return TrainAndValidationDatasetResult(
-        total_tokens=total_tokens,
-        train_dataset=dataset,
-        validation_dataset=validation_dataset,
-    )

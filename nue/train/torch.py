@@ -35,7 +35,7 @@ from yaspin.core import Yaspin
 
 from nue.model.base import GPTConfig
 from nue.model.torch import MinimalGPT, init_weights
-from nue.train.dataset import load_train_and_validation_dataset
+from nue.train.dataset import load_train_dataset
 from nue.utils import format_number_abbrev
 
 from .base import Epoch, TrainingOptions, TrainingSession
@@ -151,16 +151,15 @@ class PyTorchTrainer:
 
         # --------- 3) データセット準備 ---------
         click.secho("[3/7] Prepare dataset", fg="green", bold=True)
-        dataset_result = load_train_and_validation_dataset(
+
+        dataset, total_tokens = load_train_dataset(
             ctx_len=options.ctx_len,
             chunk_overlap_len=options.chunk_overlap_len,
             override_data_size=options.override_data_size,
         )
-
-        total_tokens = dataset_result.total_tokens
-
-        train_dataset = dataset_result.train_dataset
-        validation_dataset = dataset_result.validation_dataset
+        train_and_test_datasets = dataset.train_test_split(test_size=0.05)
+        validation_dataset = train_and_test_datasets["test"]
+        train_dataset = train_and_test_datasets["train"]
 
         train_dataset.set_format(type="torch", columns=["input_ids"])
         validation_dataset.set_format(type="torch", columns=["input_ids"])

@@ -15,15 +15,20 @@
 import dataclasses
 import json
 import os
+from typing import Any
 
 import click
 import mlx.core as mx
+import mlx.data
 import mlx.nn as nn
+import numpy as np
+from datasets import Dataset
+from yaspin import yaspin
 
 from nue.mlx.model import NueLM
 from nue.model.base import GPTConfig
 from nue.train.base import TrainingOptions, TrainingSession
-from nue.train.dataset import load_train_and_validation_dataset, load_train_dataset
+from nue.train.dataset import load_train_dataset
 from nue.train.tokenizer import TOKENIZER
 from nue.utils import format_number_abbrev
 
@@ -76,22 +81,40 @@ class MlxTrainer:
         click.secho("[2/7] Initialize model", fg="green", bold=True)
 
         # --------- 3) データセット準備 ---------
+        def hf_dataset_to_buffer(dataset: Dataset) -> Any:
+            dicts = []
+            for input_ids in dataset["input_ids"]:
+                dicts.append({"input_ids": input_ids})
+
+            assert isinstance(dicts, list)
+            assert isinstance(dicts[0], dict)
+            assert isinstance(dicts[0]["input_ids"], np.ndarray)
+
+            return mlx.data.buffer_from_vector(dicts)  # type: ignore
+
         click.secho("[3/7] Prepare dataset", fg="green", bold=True)
-        dataset_result = load_train_and_validation_dataset(
+        dataset, total_tokens = load_train_dataset(
             ctx_len=options.ctx_len,
             chunk_overlap_len=options.chunk_overlap_len,
             override_data_size=options.override_data_size,
         )
-
-        train_dataset = dataset_result.train_dataset
-        validation_dataset = dataset_result.validation_dataset
-        total_tokens = dataset_result.total_tokens
-
         click.secho(
             f"Total tokens: {format_number_abbrev(total_tokens)} ({total_tokens:,})",
             fg="cyan",
         )
+
+        dataset.set_format(type="numpy", columns=["input_ids"])
+
+        # Split into train and validation datasets
+        train_and_test_datasets = dataset.train_test_split(test_size=0.05)
+        validation_dataset = train_and_test_datasets["test"]
+        train_dataset = train_and_test_datasets["train"]
+
+        # Load dataset into mlx buffer
+        train_buffer = hf_dataset_to_buffer(train_dataset)
+        validation_buffer = hf_dataset_to_buffer(validation_dataset)
+
         click.secho(
-            f"Loader created (train: {len(train_dataset):,} rows, val: {len(validation_dataset):,} rows)",
+            f"Loader created (train: {len(train_buffer):,} rows, val: {len(validation_buffer):,} rows)",
             fg="cyan",
         )
