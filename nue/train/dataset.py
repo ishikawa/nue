@@ -26,7 +26,6 @@ from datasets import (
     load_dataset,
 )
 from sentencepiece import SentencePieceProcessor
-from termcolor import colored
 
 from nue.common import DATASET_CACHE_DIR
 from nue.datasets import DATASET_LIST
