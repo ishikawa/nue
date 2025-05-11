@@ -22,6 +22,7 @@ import click
 import mlx.core as mx
 import mlx.data
 import mlx.nn as nn
+import mlx.optimizers
 import numpy as np
 from datasets import Dataset
 from termcolor import colored
@@ -137,6 +138,17 @@ class MlxTrainer:
         # --------- 4) Optimizer & Scheduler ---------
         click.secho("[4/7] Prepare optimizer & scheduler", fg="bright_green", bold=True)
 
+        loss_and_grad_fn = nn.value_and_grad(self.model, cross_entropy_mean)
+
+        # NOTE: Adam だと速く収束するが鋭い谷に落ちやすい
+        # optimizer = optim.Adam(model.parameters(), lr=lr)
+        # NOTE: SGD は安定性を増すが、データ量が少ない時は収束しなかった
+        optimizer = mlx.optimizers.AdamW(
+            learning_rate=options.lr,
+            # 過学習防止のため正則化
+            weight_decay=0.01,
+        )
+
         num_training_steps_per_epoch = math.ceil(
             len(train_dataset) / options.batch_size
         )
@@ -147,8 +159,6 @@ class MlxTrainer:
             f"Estimated total steps: {num_training_steps}, Warmup steps: {num_warmup_steps}",
             fg="cyan",
         )
-
-        loss_and_grad_fn = nn.value_and_grad(self.model, cross_entropy_mean)
 
         click.secho("[5/7] Training from scratch", fg="bright_green", bold=True)
         self.model.train()
@@ -207,6 +217,12 @@ class MlxTrainer:
 
                     logits = self.model(input_ids, attention_mask=attn_mask)
                     loss, grads = loss_and_grad_fn(logits, labels)
+
+                    # Update the model with the gradients. So far no computation has happened.
+                    optimizer.update(self.model, grads)
+
+                    # Compute the new parameters but also the optimizer state.
+                    mx.eval(self.model.parameters(), optimizer.state)
 
                     logits_mean = float(logits.abs().mean())
 
