@@ -14,8 +14,9 @@
 
 import dataclasses
 import json
+import math
 import os
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 import click
 import mlx.core as mx
@@ -23,6 +24,7 @@ import mlx.data
 import mlx.nn as nn
 import numpy as np
 from datasets import Dataset
+from termcolor import colored
 from yaspin import yaspin
 
 from nue.mlx.model import NueLM
@@ -102,7 +104,7 @@ class MlxTrainer:
                 .batch(options.batch_size)
             )
 
-        click.secho("[3/7] Prepare dataset", fg="green", bold=True)
+        click.secho("[3/7] Prepare dataset", fg="bright_green", bold=True)
         dataset, total_tokens = load_train_dataset(
             ctx_len=options.ctx_len,
             chunk_overlap_len=options.chunk_overlap_len,
@@ -132,52 +134,96 @@ class MlxTrainer:
         train_stream = buffer_to_stream(train_buffer)
         validation_stream = buffer_to_stream(validation_buffer)
 
+        # --------- 4) Optimizer & Scheduler ---------
+        click.secho("[4/7] Prepare optimizer & scheduler", fg="bright_green", bold=True)
+
+        num_training_steps_per_epoch = math.ceil(
+            len(train_dataset) / options.batch_size
+        )
+        num_training_steps = num_training_steps_per_epoch * options.n_epochs
+        num_warmup_steps = int(min(num_training_steps * 0.05, options.max_warmup_steps))
+
+        click.secho(
+            f"Estimated total steps: {num_training_steps}, Warmup steps: {num_warmup_steps}",
+            fg="cyan",
+        )
+
+        click.secho("[5/7] Training from scratch", fg="bright_green", bold=True)
         with yaspin().cyan as spinner:
-            for i, input_ids in enumerate(train_stream):
-                input_ids = mx.array(input_ids["input_ids"])
 
-                # 1) Build attention mask (boolean mask)
-                attn_mask = mx.array(input_ids != PAD_TOKEN_ID)
+            def set_spinner_text(
+                i_epoch: int,
+                i_step: int,
+                *,
+                lr: float,
+                loss: Optional[float] = None,
+                logits_mean: Optional[float] = None,
+            ):
+                p = (i_step + 1) / num_training_steps_per_epoch
+                spinner.text = (
+                    colored(
+                        f"Epoch {i_epoch + 1}/{options.n_epochs} Step {i_step + 1} ({p:.1%})",
+                        color="cyan",
+                    )
+                    + " ("
+                    + f"lr: {lr:.8f}"
+                    + (f", loss: {loss:.3f}" if loss is not None else "")
+                    + (
+                        f", logits mean: {logits_mean:.3f}"
+                        if logits_mean is not None
+                        else ""
+                    )
+                    + ")"
+                )
 
-                # 2) Create labels
-                # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
-                # - パディング部分は損失計算から除外する必要がある
+            for i_epoch in range(0, options.n_epochs):
+                for i_step, input_ids in enumerate(train_stream):
+                    input_ids = mx.array(input_ids["input_ids"])
 
-                # batch と同じ shape で全ての要素を IGNORE (損失計算で無視される値) で初期化
-                labels = mx.full(input_ids.shape, IGNORE_TOKEN_ID)
+                    # 1) Build attention mask (boolean mask)
+                    attn_mask = mx.array(input_ids != PAD_TOKEN_ID)
 
-                # input_ids を左シフトして labels に代入することで、
-                # labels[i] <- input_ids[i+1]
-                labels[:, :-1] = input_ids[:, 1:]
+                    # 2) Create labels
+                    # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
+                    # - パディング部分は損失計算から除外する必要がある
 
-                # labels の要素で PAD_ID となっている箇所を IGNORE にする
-                labels = mx.where(labels == PAD_TOKEN_ID, IGNORE_TOKEN_ID, labels)
+                    # batch と同じ shape で全ての要素を IGNORE (損失計算で無視される値) で初期化
+                    labels = mx.full(input_ids.shape, IGNORE_TOKEN_ID)
 
-                # print(f"{i} batch: {input_ids}")
-                # print(f"{i} attn_mask: {attn_mask}")
-                # print(f"{i} labels: {labels}")
+                    # input_ids を左シフトして labels に代入することで、
+                    # labels[i] <- input_ids[i+1]
+                    labels[:, :-1] = input_ids[:, 1:]
 
-                mx.eval(input_ids)
-                mx.eval(attn_mask)
-                mx.eval(labels)
+                    # labels の要素で PAD_ID となっている箇所を IGNORE にする
+                    labels = mx.where(labels == PAD_TOKEN_ID, IGNORE_TOKEN_ID, labels)
 
-                logits = self.model(input_ids, attention_mask=attn_mask)
-                print(f"{i} logits: {logits}")
+                    mx.eval(input_ids)
+                    mx.eval(attn_mask)
+                    mx.eval(labels)
 
-                # --- 損失計算
+                    logits = self.model(input_ids, attention_mask=attn_mask)
 
-                loss = cross_entropy_mean(logits, labels)
-                print(f"{i} loss: {loss}")
+                    # --- 損失計算
+                    loss = cross_entropy_mean(logits, labels)
+                    logits_mean = float(logits.abs().mean())
 
-                if i >= 5:
-                    break
+                    set_spinner_text(
+                        i_epoch=i_epoch,
+                        i_step=i_step,
+                        lr=0,
+                        loss=float(loss),
+                        logits_mean=logits_mean,
+                    )
+
+                    if i_step >= 5:
+                        break
 
 
 def cross_entropy_mean(
     logits: mx.array,  # (B, T, V)
     labels: mx.array,  # (B, T)
     label_smoothing: float = 0.0,
-):
+) -> float:
     """
     Compute the cross-entropy loss mean. Ignores IGNORE_TOKEN_ID.
     """
@@ -200,4 +246,4 @@ def cross_entropy_mean(
 
     # mask で無視する部分を考慮しつつ平均を取る
     per_token_loss = per_token_loss * mask.astype(per_token_loss.dtype)
-    return mx.sum(per_token_loss) / mx.maximum(mx.sum(mask), 1)
+    return float(mx.sum(per_token_loss) / mx.maximum(mx.sum(mask), 1))
