@@ -389,7 +389,7 @@ class MlxTrainer:
 
     def evaluate(
         self,
-        data_loader: "HFDataloader",
+        data_loader: Any,  # mlx.data.Stream
         *,
         max_tokens: Optional[int] = None,
     ) -> float:
@@ -495,27 +495,6 @@ def get_cosine_schedule_with_warmup(
         return mx.maximum(mx.array(0.0), cosine_lr_multiple) * base_lr
 
     return schedule
-
-
-class HFDataloader:
-    def __init__(
-        self,
-        dataset: Dataset,
-        *,
-        batch_size: int,
-    ):
-        self.dataset = dataset.with_format("numpy", columns=["input_ids"])
-        self.batch_size = batch_size
-
-    def __iter__(self) -> Iterator[list[dict[str, np.ndarray]]]:
-        for start in range(0, len(self.dataset), self.batch_size):
-            end = start + self.batch_size
-            if end > len(self.dataset):
-                break
-
-            rows = [self.dataset[i] for i in range(start, end)]
-            # batch = self.dataset.select(range(start, end))
-            yield rows
 
 
 def collate(batch: dict[str, Any], *, config: GPTConfig) -> dict[str, mx.array]:
