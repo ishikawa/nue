@@ -153,7 +153,16 @@ class MlxTrainer:
             fg="cyan",
         )
 
-        loss_and_grad_fn = nn.value_and_grad(self.model, cross_entropy_mean)
+        def loss_fn(
+            model: nn.Module,
+            input_ids: mx.array,
+            labels: mx.array,
+            attention_mask: mx.array | None = None,
+        ) -> mx.array:
+            logits = model(input_ids, attention_mask=attention_mask)
+            return cross_entropy_mean(logits, labels)
+
+        loss_and_grad_fn = nn.value_and_grad(self.model, loss_fn)
 
         lr_scheduler = get_cosine_schedule_with_warmup(
             base_lr=options.lr,
@@ -181,7 +190,6 @@ class MlxTrainer:
                 *,
                 lr: float,
                 loss: Optional[float] = None,
-                logits_mean: Optional[float] = None,
             ):
                 p = (i_step + 1) / num_training_steps_per_epoch
                 spinner.text = (
@@ -192,11 +200,6 @@ class MlxTrainer:
                     + " ("
                     + f"lr: {lr:.8f}"
                     + (f", loss: {loss:.3f}" if loss is not None else "")
-                    + (
-                        f", logits mean: {logits_mean:.3f}"
-                        if logits_mean is not None
-                        else ""
-                    )
                     + ")"
                 )
 
@@ -227,10 +230,6 @@ class MlxTrainer:
 
                     batch = next(loader_iter)
 
-                    if measure_time:
-                        mx.synchronize()
-                        t1 = time.perf_counter()
-
                     input_ids = mx.array(batch["input_ids"])
 
                     # 1) Build attention mask (boolean mask)
@@ -254,13 +253,17 @@ class MlxTrainer:
                     mx.eval(attn_mask)
                     mx.eval(labels)
 
-                    logits = self.model(input_ids, attention_mask=attn_mask)
+                    if measure_time:
+                        mx.synchronize()
+                        t1 = time.perf_counter()
+
+                    loss, grads = loss_and_grad_fn(
+                        self.model, input_ids, labels, attention_mask=attn_mask
+                    )
 
                     if measure_time:
                         mx.synchronize()
                         t2 = time.perf_counter()
-
-                    loss, grads = loss_and_grad_fn(logits, labels)
 
                     # Update the model with the gradients. So far no computation has happened.
                     optimizer.update(self.model, grads)
@@ -272,7 +275,6 @@ class MlxTrainer:
                         mx.synchronize()
                         t3 = time.perf_counter()
 
-                    logits_mean = float(logits.abs().mean())
                     current_lr = float(lr_scheduler(mx.array(i_step)))
 
                     set_spinner_text(
@@ -280,7 +282,6 @@ class MlxTrainer:
                         i_step=i_step,
                         lr=current_lr,
                         loss=float(loss),
-                        logits_mean=logits_mean,
                     )
 
                     if measure_time:
