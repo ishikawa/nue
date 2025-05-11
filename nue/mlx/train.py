@@ -258,30 +258,30 @@ class MlxTrainer:
 
                     if measure_time:
                         mx.synchronize()
+                        mx.eval(loss, grads)
                         t2 = time.perf_counter()
 
                     # Update the model with the gradients. So far no computation has happened.
                     optimizer.update(self.model, grads)
+
+                    if measure_time:
+                        mx.synchronize()
+                        mx.eval(self.model.parameters())
+                        t3 = time.perf_counter()
 
                     # Compute the new parameters but also the optimizer state.
                     mx.eval(self.model.parameters(), optimizer.state)
 
                     if measure_time:
                         mx.synchronize()
-                        t3 = time.perf_counter()
-
-                    current_lr = float(lr_scheduler(mx.array(i_step)))
+                        t4 = time.perf_counter()
 
                     set_spinner_text(
                         i_epoch=i_epoch,
                         i_step=i_step,
-                        lr=current_lr,
+                        lr=float(lr_scheduler(mx.array(i_step))),
                         loss=float(loss),
                     )
-
-                    if measure_time:
-                        mx.synchronize()
-                        t4 = time.perf_counter()
 
                     total_loss += loss.item()
                     epoch_loss += loss.item()
@@ -498,29 +498,33 @@ class HFDataloader:
         *,
         batch_size: int,
     ):
-        self.dataset = dataset
+        self.dataset = dataset.with_format("numpy", columns=["input_ids"])
         self.batch_size = batch_size
 
-    def __iter__(self) -> Iterator[Dataset]:
+    def __iter__(self) -> Iterator[list[dict[str, np.ndarray]]]:
         for start in range(0, len(self.dataset), self.batch_size):
-            batch = self.dataset.select(range(start, start + self.batch_size))
-            yield batch
+            end = start + self.batch_size
+            if end > len(self.dataset):
+                break
+
+            rows = [self.dataset[i] for i in range(start, end)]
+            # batch = self.dataset.select(range(start, end))
+            yield rows
 
 
-def collate(batch: Dataset, *, config: GPTConfig) -> dict[str, mx.array]:
-    input_ids = [mx.array(b["input_ids"]) for b in batch]  # type: ignore
-    input_ids = [
-        mx.pad(
-            input_id,
-            pad_width=(
-                0,
-                config.ctx_len - input_id.shape[0],
-            ),
-            constant_values=PAD_TOKEN_ID,
-        )
-        for input_id in input_ids
-    ]
-    input_ids = mx.array(input_ids)
+def collate(
+    batch: list[dict[str, np.ndarray]], *, config: GPTConfig
+) -> dict[str, mx.array]:
+    B = len(batch)
+    T = config.ctx_len
+
+    # ---------- 1) パディング ----------
+    pad_arr = np.full((B, T), PAD_TOKEN_ID, dtype=np.int32)
+    for i, b in enumerate(batch):
+        L = min(len(b["input_ids"]), T)
+        pad_arr[i, :L] = b["input_ids"][:L]
+
+    input_ids = mx.array(pad_arr)
 
     # 2) Build attention mask (boolean mask)
     attn_mask = mx.array(input_ids != PAD_TOKEN_ID)
