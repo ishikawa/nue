@@ -24,6 +24,7 @@ from typing import Iterable, Optional, cast
 import click
 import torch
 from termcolor import colored
+
 # from torch.amp.grad_scaler import GradScaler
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
@@ -32,13 +33,12 @@ from torchtune.training import get_cosine_schedule_with_warmup
 from yaspin import yaspin
 from yaspin.core import Yaspin
 
-from nue.model.base import GPTConfig
 from nue.model.torch import MinimalGPT, init_weights
 from nue.train.dataset import load_train_dataset
 from nue.train.trainer import BaseTrainer
 from nue.utils import format_number_abbrev
 
-from .base import Epoch, TrainingOptions, TrainingSession
+from .base import TrainingOptions
 from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
 
 # NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出る
@@ -102,16 +102,14 @@ class PyTorchTrainer(BaseTrainer):
         super().__init__(options)
         self.device = detect_device()
 
-
     def train(
         self,
-        session: TrainingSession,
         *,
         log_validation_max_tokens: int = 50_000,
         measure_time: bool = False,
         override_base_lr: float | None = None,
     ) -> None:
-        options = session.options
+        options = self.options
 
         # シード設定
         if options.seed is not None:
@@ -125,7 +123,7 @@ class PyTorchTrainer(BaseTrainer):
         )
 
         # Save hyperparameters in JSON format
-        with open(os.path.join(session.options.model_dir, "hparams.json"), "w") as f:
+        with open(os.path.join(self.options.model_dir, "hparams.json"), "w") as f:
             json.dump(dataclasses.asdict(self.config), f, indent=4)
 
         # --------- 2) Model 初期化 ---------
@@ -234,7 +232,6 @@ class PyTorchTrainer(BaseTrainer):
         # --------- 5) 前回の学習状態を復元 ---------
         parameters_path = os.path.join(options.model_dir, "parameters.pt")
         checkpoint_path = os.path.join(options.model_dir, "checkpoint.pt")
-        session_path = os.path.join(options.model_dir, "train.json")
 
         checkpoint = None
         start_epoch = 0
@@ -285,12 +282,6 @@ class PyTorchTrainer(BaseTrainer):
                 },
                 checkpoint_path,
             )
-            with open(session_path, "w") as f:
-                json.dump(
-                    dataclasses.asdict(session),
-                    f,
-                    indent=4,
-                )
 
         # 学習開始前に学習率を変更する（学習再開時に上書きしたい場合）
         if override_base_lr is not None:
@@ -552,7 +543,6 @@ class PyTorchTrainer(BaseTrainer):
                     model.train()
 
                 avg_epoch_loss = epoch_loss / len(train_loader)
-                session.epochs.append(Epoch(epoch=i_epoch + 1, loss=avg_epoch_loss))
 
                 spinner.write(
                     colored(
@@ -573,13 +563,6 @@ class PyTorchTrainer(BaseTrainer):
         click.secho(
             f"[7/7] Saving model to {parameters_path}...", fg="bright_green", bold=True
         )
-
-        with open(session_path, "w") as f:
-            json.dump(
-                dataclasses.asdict(session),
-                f,
-                indent=4,
-            )
 
         torch.save(model.state_dict(), parameters_path)
 

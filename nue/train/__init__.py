@@ -1,7 +1,8 @@
-from .base import Epoch, TrainingOptions, TrainingSession
+from .base import TrainingOptions, TrainingSession
+from .trainer import BaseTrainer
 
 __all__ = [
-    "Epoch",
+    "BaseTrainer",
     "TrainingOptions",
     "TrainingSession",
 ]

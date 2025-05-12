@@ -31,7 +31,7 @@ from yaspin import yaspin
 
 from nue.mlx.model import NueLM
 from nue.model.base import GPTConfig
-from nue.train.base import TrainingOptions, TrainingSession
+from nue.train.base import TrainingOptions
 from nue.train.dataset import load_train_dataset
 from nue.train.tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
 from nue.train.trainer import BaseTrainer
@@ -51,7 +51,6 @@ class MlxTrainer(BaseTrainer):
 
     def train(
         self,
-        session: TrainingSession,
         *,
         log_validation_max_tokens: int = 50_000,
         measure_time: bool = False,
