@@ -21,6 +21,7 @@ from typing import Iterable, Optional, cast
 
 import click
 import torch
+from datasets import Dataset
 from termcolor import colored
 
 # from torch.amp.grad_scaler import GradScaler
@@ -32,9 +33,7 @@ from yaspin import yaspin
 from yaspin.core import Yaspin
 
 from nue.model.torch import MinimalGPT, init_weights
-from nue.train.dataset import load_train_dataset
 from nue.train.trainer import BaseTrainer
-from nue.utils import format_number_abbrev
 
 from .base import TrainingOptions
 from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
@@ -92,6 +91,9 @@ class PyTorchTrainer(BaseTrainer):
     model: torch.nn.Module | None = None
     device: torch.device
 
+    train_loader: DataLoader
+    validation_loader: DataLoader
+
     def __init__(
         self,
         /,
@@ -117,30 +119,11 @@ class PyTorchTrainer(BaseTrainer):
 
         self.model = model
 
-    def _train(
+    def on_load_dataset(
         self,
-        *,
-        log_validation_max_tokens: int,
-        measure_time: bool,
-        override_base_lr: float | None,
+        train_dataset: Dataset,
+        validation_dataset: Dataset,
     ) -> None:
-        options = self.options
-        model = self.model
-
-        assert model is not None
-
-        # --------- 3) データセット準備 ---------
-        click.secho("[3/7] Prepare dataset", fg="green", bold=True)
-
-        dataset, total_tokens = load_train_dataset(
-            ctx_len=options.ctx_len,
-            chunk_overlap_len=options.chunk_overlap_len,
-            override_data_size=options.override_data_size,
-        )
-        train_and_test_datasets = dataset.train_test_split(test_size=0.05)
-        validation_dataset = train_and_test_datasets["test"]
-        train_dataset = train_and_test_datasets["train"]
-
         train_dataset.set_format(type="torch", columns=["input_ids"])
         validation_dataset.set_format(type="torch", columns=["input_ids"])
 
@@ -154,7 +137,7 @@ class PyTorchTrainer(BaseTrainer):
 
         train_loader = DataLoader(
             train_dataset,  # type: ignore
-            batch_size=options.batch_size,
+            batch_size=self.options.batch_size,
             shuffle=True,
             collate_fn=collate_pad,
             num_workers=data_loader_num_workers,
@@ -163,19 +146,29 @@ class PyTorchTrainer(BaseTrainer):
         )
         validation_loader = DataLoader(
             validation_dataset,  # type: ignore
-            batch_size=options.batch_size,
+            batch_size=self.options.batch_size,
             shuffle=False,
             collate_fn=collate_pad,
         )
 
-        click.secho(
-            f"Total tokens: {format_number_abbrev(total_tokens)} ({total_tokens:,})",
-            fg="cyan",
-        )
-        click.secho(
-            f"Loader created (train: {len(train_dataset):,} rows, val: {len(validation_dataset):,} rows)",
-            fg="cyan",
-        )
+        self.train_loader = train_loader
+        self.validation_loader = validation_loader
+
+    def _train(
+        self,
+        *,
+        log_validation_max_tokens: int,
+        measure_time: bool,
+        override_base_lr: float | None,
+    ) -> None:
+        options = self.options
+        model = self.model
+
+        assert model is not None
+        assert self.train_dataset is not None
+        assert self.validation_dataset is not None
+        assert self.train_loader is not None
+        assert self.validation_loader is not None
 
         # --------- 4) Optimizer & Scheduler ---------
         click.secho("[4/7] Prepare optimizer & scheduler", fg="green", bold=True)
@@ -195,7 +188,7 @@ class PyTorchTrainer(BaseTrainer):
         # おおよその総学習ステップ数を計算 (エポック数 x 1エポックあたりのステップ数)
         # len(dataset) はチャンク化後の訓練データセットのサンプル数
         num_training_steps_per_epoch = math.ceil(
-            len(train_dataset) / options.batch_size
+            len(self.train_dataset) / options.batch_size
         )
         num_training_steps = num_training_steps_per_epoch * options.n_epochs
         num_warmup_steps = int(min(num_training_steps * 0.05, options.max_warmup_steps))
@@ -343,7 +336,7 @@ class PyTorchTrainer(BaseTrainer):
                 step_elapsed = 0.0
 
                 i_step = 0
-                loader_iter = iter(train_loader)
+                loader_iter = iter(self.train_loader)
 
                 while True:
                     try:
@@ -449,7 +442,7 @@ class PyTorchTrainer(BaseTrainer):
 
                                 # Evaluate on validation dataset
                                 val_loss = self.evaluate(
-                                    validation_loader,
+                                    self.validation_loader,
                                     criterion,
                                     max_tokens=log_validation_max_tokens,
                                 )
@@ -519,7 +512,7 @@ class PyTorchTrainer(BaseTrainer):
                     model.eval()
 
                     # 評価
-                    val_loss = self.evaluate(validation_loader, criterion)
+                    val_loss = self.evaluate(self.validation_loader, criterion)
 
                     # サンプル生成
                     with torch.no_grad():
@@ -533,7 +526,7 @@ class PyTorchTrainer(BaseTrainer):
                 finally:
                     model.train()
 
-                avg_epoch_loss = epoch_loss / len(train_loader)
+                avg_epoch_loss = epoch_loss / len(self.train_dataset)
 
                 spinner.write(
                     colored(

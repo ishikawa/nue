@@ -4,8 +4,11 @@ import os
 from abc import ABC, abstractmethod
 
 import click
+from datasets import Dataset
 
 from nue.model.base import GPTConfig
+from nue.train.dataset import load_train_dataset
+from nue.utils import format_number_abbrev
 
 from .base import TrainingOptions
 from .tokenizer import TOKENIZER
@@ -14,6 +17,9 @@ from .tokenizer import TOKENIZER
 class BaseTrainer(ABC):
     config: GPTConfig
     options: TrainingOptions
+
+    train_dataset: Dataset | None = None
+    validation_dataset: Dataset | None = None
 
     def __init__(self, options: TrainingOptions):
         self.options = options
@@ -52,6 +58,32 @@ class BaseTrainer(ABC):
         click.secho("[2/7] Initialize model", fg="green", bold=True)
         self.initialize_model()
 
+        # --------- 3) データセット準備 ---------
+        click.secho("[3/7] Prepare dataset", fg="green", bold=True)
+
+        dataset, total_tokens = load_train_dataset(
+            ctx_len=self.options.ctx_len,
+            chunk_overlap_len=self.options.chunk_overlap_len,
+            override_data_size=self.options.override_data_size,
+        )
+        train_and_test_datasets = dataset.train_test_split(test_size=0.05)
+        validation_dataset = train_and_test_datasets["test"]
+        train_dataset = train_and_test_datasets["train"]
+
+        click.secho(
+            f"Total tokens: {format_number_abbrev(total_tokens)} ({total_tokens:,})",
+            fg="cyan",
+        )
+        click.secho(
+            f"Loader created (train: {len(train_dataset):,} rows, val: {len(validation_dataset):,} rows)",
+            fg="cyan",
+        )
+
+        self.train_dataset = train_dataset
+        self.validation_dataset = validation_dataset
+
+        self.on_load_dataset(train_dataset, validation_dataset)
+
         self._train(
             log_validation_max_tokens=log_validation_max_tokens,
             measure_time=measure_time,
@@ -69,6 +101,14 @@ class BaseTrainer(ABC):
 
     @abstractmethod
     def initialize_model(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_load_dataset(
+        self,
+        train_dataset: Dataset,
+        validation_dataset: Dataset,
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod

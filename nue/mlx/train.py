@@ -21,7 +21,6 @@ import mlx.core as mx
 import mlx.data
 import mlx.nn as nn
 import mlx.optimizers
-import numpy as np
 from datasets import Dataset
 from termcolor import colored
 from yaspin import yaspin
@@ -29,14 +28,15 @@ from yaspin import yaspin
 from nue.mlx.model import NueLM
 from nue.model.base import GPTConfig
 from nue.train.base import TrainingOptions
-from nue.train.dataset import load_train_dataset
 from nue.train.tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
 from nue.train.trainer import BaseTrainer
-from nue.utils import format_number_abbrev
 
 
 class MlxTrainer(BaseTrainer):
     model: NueLM
+
+    train_stream: Any | None = None
+    validation_stream: Any | None = None
 
     def __init__(
         self,
@@ -59,16 +59,14 @@ class MlxTrainer(BaseTrainer):
             case _:
                 raise ValueError(f"Unknown device type: {mx.default_device().type}")
 
-    def _train(
-        self,
-        *,
-        log_validation_max_tokens: int,
-        measure_time: bool,
-        override_base_lr: float | None,
-    ) -> None:
-        options = self.options
+    def initialize_model(self) -> None:
+        pass
 
-        # --------- 3) データセット準備 ---------
+    def on_load_dataset(
+        self,
+        train_dataset: Dataset,
+        validation_dataset: Dataset,
+    ) -> None:
         def build_hf_dataset_iter_fn(
             dataset: Dataset,
         ) -> Callable[[], Iterator[dict[str, Any]]]:
@@ -85,37 +83,31 @@ class MlxTrainer(BaseTrainer):
                 mlx.data.stream_python_iterable(build_hf_dataset_iter_fn(dataset))  # type: ignore
                 # Pad each sequence to the right
                 .pad_to_size(
-                    "input_ids", dim=0, size=options.ctx_len, pad_value=PAD_TOKEN_ID
+                    "input_ids",
+                    dim=0,
+                    size=self.options.ctx_len,
+                    pad_value=PAD_TOKEN_ID,
                 )
-                .batch(options.batch_size)
+                .batch(self.options.batch_size)
             )
 
-        click.secho("[3/7] Prepare dataset", fg="bright_green", bold=True)
-        dataset, total_tokens = load_train_dataset(
-            ctx_len=options.ctx_len,
-            chunk_overlap_len=options.chunk_overlap_len,
-            override_data_size=options.override_data_size,
-        )
-        click.secho(
-            f"Total tokens: {format_number_abbrev(total_tokens)} ({total_tokens:,})",
-            fg="cyan",
-        )
-
-        # dataset.set_format(type="numpy", columns=["input_ids"])
-
-        # Split into train and validation datasets
-        train_and_test_datasets = dataset.train_test_split(test_size=0.05)
-        validation_dataset = train_and_test_datasets["test"]
-        train_dataset = train_and_test_datasets["train"]
-
-        click.secho(
-            f"Loader created (train: {len(train_dataset):,} rows, val: {len(validation_dataset):,} rows)",
-            fg="cyan",
-        )
-
         # Load dataset into mlx buffer
-        train_stream = hf_dataset_to_stream(train_dataset)
-        validation_stream = hf_dataset_to_stream(validation_dataset)
+        self.train_stream = hf_dataset_to_stream(train_dataset)
+        self.validation_stream = hf_dataset_to_stream(validation_dataset)
+
+    def _train(
+        self,
+        *,
+        log_validation_max_tokens: int,
+        measure_time: bool,
+        override_base_lr: float | None,
+    ) -> None:
+        options = self.options
+
+        assert self.train_dataset is not None
+        assert self.validation_dataset is not None
+        assert self.train_stream is not None
+        assert self.validation_stream is not None
 
         # --------- 4) Optimizer & Scheduler ---------
         click.secho("[4/7] Prepare optimizer & scheduler", fg="bright_green", bold=True)
@@ -124,7 +116,7 @@ class MlxTrainer(BaseTrainer):
         # おおよその総学習ステップ数を計算 (エポック数 x 1エポックあたりのステップ数)
         # len(dataset) はチャンク化後の訓練データセットのサンプル数
         num_training_steps_per_epoch = math.ceil(
-            len(train_dataset) / options.batch_size
+            len(self.train_dataset) / options.batch_size
         )
         num_training_steps = num_training_steps_per_epoch * options.n_epochs
         num_warmup_steps = int(min(num_training_steps * 0.05, options.max_warmup_steps))
@@ -202,7 +194,7 @@ class MlxTrainer(BaseTrainer):
             i_step = 0
 
             for i_epoch in range(0, options.n_epochs):
-                loader_iter = iter(train_stream)
+                loader_iter = iter(self.train_stream)
 
                 while True:
                     if measure_time:
@@ -268,7 +260,7 @@ class MlxTrainer(BaseTrainer):
 
                             # Evaluate on validation dataset
                             val_loss = self.evaluate(
-                                validation_stream,
+                                self.validation_stream,
                                 max_tokens=log_validation_max_tokens,
                             )
 
