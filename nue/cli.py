@@ -19,6 +19,7 @@ from datetime import datetime
 import click
 
 from nue.common import BUILD_DIR
+from nue.train.base import TrainingSession
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -216,7 +217,7 @@ def train_command(
     override_base_lr: float | None = None,
     framework: str = "torch",
 ):
-    from nue.train import Epoch, TrainingOptions, TrainingSession
+    from nue.train import TrainingOptions
 
     if model_dir is not None:
         click.secho(f"Resuming training from checkpoint {model_dir}", fg="green")
@@ -225,7 +226,6 @@ def train_command(
         with open(os.path.join(model_dir, "train.json"), "r") as f:
             raw_session = json.load(f)
             training_session = TrainingSession(
-                epochs=[Epoch(**e) for e in raw_session["epochs"]],
                 options=TrainingOptions(**raw_session["options"]),
             )
             training_options = training_session.options
@@ -254,7 +254,6 @@ def train_command(
         )
 
         training_session = TrainingSession(
-            epochs=[],
             options=training_options,
         )
         with open(os.path.join(model_dir, "train.json"), "w") as f:
@@ -279,7 +278,6 @@ def train_command(
 
         trainer = PyTorchTrainer(training_options)
         trainer.train(
-            training_session,
             measure_time=measure_time,
             log_validation_max_tokens=log_validation_max_tokens,
             override_base_lr=override_base_lr,
@@ -289,7 +287,6 @@ def train_command(
 
         trainer = MlxTrainer(training_options)
         trainer.train(
-            training_session,
             measure_time=measure_time,
             log_validation_max_tokens=log_validation_max_tokens,
             override_base_lr=override_base_lr,

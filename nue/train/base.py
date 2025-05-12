@@ -3,12 +3,6 @@ from typing import Optional
 
 
 @dataclass(frozen=True)
-class Epoch:
-    epoch: int
-    loss: float
-
-
-@dataclass(frozen=True)
 class TrainingOptions:
     n_epochs: int
     batch_size: int
@@ -30,5 +24,4 @@ class TrainingOptions:
 
 @dataclass
 class TrainingSession:
-    epochs: list[Epoch]
     options: TrainingOptions
