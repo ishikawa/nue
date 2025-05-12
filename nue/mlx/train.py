@@ -68,31 +68,7 @@ class MlxTrainer(BaseTrainer):
     ) -> None:
         options = self.options
 
-        # --------- 2) Initialize model ---------
-        click.secho("[2/7] Initialize model", fg="green", bold=True)
-
         # --------- 3) データセット準備 ---------
-        def hf_dataset_to_buffer(dataset: Dataset) -> Any:
-            dicts = []
-
-            with yaspin().cyan as spinner:
-                for i, example in enumerate(dataset):
-                    spinner.text = (
-                        f"Loading dataset into buffer ({i:,}/{len(dataset):,})"
-                    )
-
-                    dicts.append(
-                        {
-                            "input_ids": example["input_ids"]  # type: ignore
-                        }
-                    )
-
-            assert isinstance(dicts, list)
-            assert isinstance(dicts[0], dict)
-            assert isinstance(dicts[0]["input_ids"], np.ndarray)
-
-            return mlx.data.buffer_from_vector(dicts)  # type: ignore
-
         def build_hf_dataset_iter_fn(
             dataset: Dataset,
         ) -> Callable[[], Iterator[dict[str, Any]]]:

@@ -107,18 +107,7 @@ class PyTorchTrainer(BaseTrainer):
     def device_type(self) -> str:
         return self.device.type
 
-    def _train(
-        self,
-        *,
-        log_validation_max_tokens: int,
-        measure_time: bool,
-        override_base_lr: float | None,
-    ) -> None:
-        options = self.options
-
-        # --------- 2) Model 初期化 ---------
-        click.secho("[2/7] Initialize model", fg="green", bold=True)
-
+    def initialize_model(self) -> None:
         model = MinimalGPT(self.config).to(torch.bfloat16).to(self.device)
         model.apply(init_weights)
 
@@ -127,6 +116,18 @@ class PyTorchTrainer(BaseTrainer):
             model = cast(torch.nn.Module, torch.compile(model, mode="max-autotune"))
 
         self.model = model
+
+    def _train(
+        self,
+        *,
+        log_validation_max_tokens: int,
+        measure_time: bool,
+        override_base_lr: float | None,
+    ) -> None:
+        options = self.options
+        model = self.model
+
+        assert model is not None
 
         # --------- 3) データセット準備 ---------
         click.secho("[3/7] Prepare dataset", fg="green", bold=True)
@@ -379,7 +380,7 @@ class PyTorchTrainer(BaseTrainer):
                             attention_mask = batch["attention_mask"].to(self.device)
                             labels = batch["labels"].to(self.device)
 
-                            logits = self.model(
+                            logits = model(
                                 input_ids,
                                 attention_mask=attention_mask,
                             )

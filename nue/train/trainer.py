@@ -48,6 +48,10 @@ class BaseTrainer(ABC):
         with open(os.path.join(self.options.model_dir, "hparams.json"), "w") as f:
             json.dump(dataclasses.asdict(self.config), f, indent=4)
 
+        # --------- 2) Model 初期化 ---------
+        click.secho("[2/7] Initialize model", fg="green", bold=True)
+        self.initialize_model()
+
         self._train(
             log_validation_max_tokens=log_validation_max_tokens,
             measure_time=measure_time,
@@ -61,6 +65,10 @@ class BaseTrainer(ABC):
     @property
     @abstractmethod
     def device_type(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def initialize_model(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
