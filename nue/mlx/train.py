@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import dataclasses
-import json
 import math
-import os
 import time
 from typing import Any, Callable, Iterable, Iterator, Optional, cast
 
@@ -49,6 +46,19 @@ class MlxTrainer(BaseTrainer):
         super().__init__(options)
         self.model = NueLM(self.config)
 
+    def manual_seed(self, seed: int) -> None:
+        mx.random.seed(seed)
+
+    @property
+    def device_type(self) -> str:
+        match mx.default_device().type:
+            case mx.DeviceType.cpu:
+                return "cpu"
+            case mx.DeviceType.gpu:
+                return "gpu"
+            case _:
+                raise ValueError(f"Unknown device type: {mx.default_device().type}")
+
     def _train(
         self,
         *,
@@ -57,19 +67,6 @@ class MlxTrainer(BaseTrainer):
         override_base_lr: float | None,
     ) -> None:
         options = self.options
-
-        # シード設定
-        if options.seed is not None:
-            mx.random.seed(options.seed)
-
-        # --------- 1) Configuration ---------
-        click.secho("[1/7] Configuration", fg="green", bold=True)
-
-        click.secho(f"vocab_size: {self.config.vocab_size}", fg="cyan")
-
-        # Save hyperparameters in JSON format
-        with open(os.path.join(options.model_dir, "hparams.json"), "w") as f:
-            json.dump(dataclasses.asdict(self.config), f, indent=4)
 
         # --------- 2) Initialize model ---------
         click.secho("[2/7] Initialize model", fg="green", bold=True)

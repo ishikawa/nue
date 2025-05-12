@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import dataclasses
-import json
 import math
 import os
 import platform
@@ -102,6 +100,13 @@ class PyTorchTrainer(BaseTrainer):
         super().__init__(options)
         self.device = detect_device()
 
+    def manual_seed(self, seed: int) -> None:
+        torch.manual_seed(seed)
+
+    @property
+    def device_type(self) -> str:
+        return self.device.type
+
     def _train(
         self,
         *,
@@ -110,21 +115,6 @@ class PyTorchTrainer(BaseTrainer):
         override_base_lr: float | None,
     ) -> None:
         options = self.options
-
-        # シード設定
-        if options.seed is not None:
-            torch.manual_seed(options.seed)
-
-        # --------- 1) Configuration ---------
-        click.secho("[1/7] Configuration", fg="green", bold=True)
-
-        click.secho(
-            f"vocab_size: {self.config.vocab_size}, device: {self.device}", fg="cyan"
-        )
-
-        # Save hyperparameters in JSON format
-        with open(os.path.join(self.options.model_dir, "hparams.json"), "w") as f:
-            json.dump(dataclasses.asdict(self.config), f, indent=4)
 
         # --------- 2) Model 初期化 ---------
         click.secho("[2/7] Initialize model", fg="green", bold=True)
