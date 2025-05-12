@@ -24,7 +24,6 @@ from typing import Iterable, Optional, cast
 import click
 import torch
 from termcolor import colored
-
 # from torch.amp.grad_scaler import GradScaler
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
@@ -36,6 +35,7 @@ from yaspin.core import Yaspin
 from nue.model.base import GPTConfig
 from nue.model.torch import MinimalGPT, init_weights
 from nue.train.dataset import load_train_dataset
+from nue.train.trainer import BaseTrainer
 from nue.utils import format_number_abbrev
 
 from .base import Epoch, TrainingOptions, TrainingSession
@@ -90,27 +90,18 @@ def collate_pad(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]
     }
 
 
-class PyTorchTrainer:
-    config: GPTConfig
-    options: TrainingOptions
+class PyTorchTrainer(BaseTrainer):
     model: torch.nn.Module | None = None
+    device: torch.device
 
     def __init__(
         self,
         /,
         options: TrainingOptions,
     ) -> None:
-        self.options = options
+        super().__init__(options)
         self.device = detect_device()
 
-        self.config = GPTConfig(
-            vocab_size=TOKENIZER.vocab_size(),
-            ctx_len=options.ctx_len,
-            n_embed=options.n_embed,
-            n_heads=options.n_heads,
-            n_layers=options.n_layers,
-            mlp_ratio=options.mlp_ratio,
-        )
 
     def train(
         self,

@@ -34,12 +34,11 @@ from nue.model.base import GPTConfig
 from nue.train.base import TrainingOptions, TrainingSession
 from nue.train.dataset import load_train_dataset
 from nue.train.tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
+from nue.train.trainer import BaseTrainer
 from nue.utils import format_number_abbrev
 
 
-class MlxTrainer:
-    config: GPTConfig
-    options: TrainingOptions
+class MlxTrainer(BaseTrainer):
     model: NueLM
 
     def __init__(
@@ -47,15 +46,7 @@ class MlxTrainer:
         /,
         options: TrainingOptions,
     ) -> None:
-        self.options = options
-        self.config = GPTConfig(
-            vocab_size=TOKENIZER.vocab_size(),
-            ctx_len=options.ctx_len,
-            n_embed=options.n_embed,
-            n_heads=options.n_heads,
-            n_layers=options.n_layers,
-            mlp_ratio=options.mlp_ratio,
-        )
+        super().__init__(options)
         self.model = NueLM(self.config)
 
     def train(
