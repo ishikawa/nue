@@ -28,6 +28,7 @@ dependencies = [
     #"torchvision==0.22.0.dev20250509",
     "torchao>=0.11.0",
     "torchtune>=0.6.1",
+    "safetensors>=0.5.3",
 ]
 
 [project.optional-dependencies]

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import math
+import os
 import time
 from typing import Any, Callable, Iterable, Iterator, Optional, cast
 
@@ -20,8 +21,8 @@ import click
 import mlx.core as mx
 import mlx.data
 import mlx.nn as nn
-import mlx.optimizers
 from datasets import Dataset
+from mlx.optimizers import AdamW, Optimizer
 from termcolor import colored
 from yaspin import yaspin
 
@@ -37,6 +38,8 @@ class MlxTrainer(BaseTrainer):
 
     train_stream: Any | None = None
     validation_stream: Any | None = None
+
+    optimizer: Optimizer | None = None
 
     def __init__(
         self,
@@ -95,8 +98,43 @@ class MlxTrainer(BaseTrainer):
         self.train_stream = hf_dataset_to_stream(train_dataset)
         self.validation_stream = hf_dataset_to_stream(validation_dataset)
 
+    def on_train_prepare(self) -> None:
+        lr_scheduler = get_cosine_schedule_with_warmup(
+            base_lr=self.options.lr,
+            num_warmup_steps=self.num_warmup_steps,
+            num_training_steps=self.num_training_steps,
+        )
+
+        # NOTE: Adam だと速く収束するが鋭い谷に落ちやすい
+        # optimizer = optim.Adam(model.parameters(), lr=lr)
+        # NOTE: SGD は安定性を増すが、データ量が少ない時は収束しなかった
+        optimizer = AdamW(
+            learning_rate=lr_scheduler,
+            # 過学習防止のため正則化
+            weight_decay=0.01,
+        )
+
+        self.optimizer = optimizer
+
+    def on_train_resume(
+        self, checkpoint_path: str
+    ) -> tuple[
+        int,  # epoch
+        int,  # step
+    ]:
+        return 0, 0
+
+    @property
+    def checkpoint_path(self) -> str:
+        return os.path.join(self.options.model_dir, "checkpoint.safetensors")
+
+    def save_checkpoint(self, *, epoch: int, step: int) -> None:
+        pass
+
     def _train(
         self,
+        start_epoch: int,
+        start_step: int,
         *,
         log_validation_max_tokens: int,
         measure_time: bool,
@@ -108,13 +146,9 @@ class MlxTrainer(BaseTrainer):
         assert self.validation_dataset is not None
         assert self.train_stream is not None
         assert self.validation_stream is not None
+        assert self.optimizer is not None
 
-        # --------- 4) Optimizer & Scheduler ---------
-        click.secho("[4/7] Prepare optimizer & scheduler", fg="bright_green", bold=True)
-
-        # --- スケジューラーの設定 ---
-        # おおよその総学習ステップ数を計算 (エポック数 x 1エポックあたりのステップ数)
-        # len(dataset) はチャンク化後の訓練データセットのサンプル数
+        optimizer = self.optimizer
 
         def loss_fn(
             model: nn.Module,
@@ -126,21 +160,6 @@ class MlxTrainer(BaseTrainer):
             return cross_entropy_mean(logits, labels)
 
         loss_and_grad_fn = nn.value_and_grad(self.model, loss_fn)
-
-        lr_scheduler = get_cosine_schedule_with_warmup(
-            base_lr=options.lr,
-            num_warmup_steps=self.num_warmup_steps,
-            num_training_steps=self.num_training_steps,
-        )
-
-        # NOTE: Adam だと速く収束するが鋭い谷に落ちやすい
-        # optimizer = optim.Adam(model.parameters(), lr=lr)
-        # NOTE: SGD は安定性を増すが、データ量が少ない時は収束しなかった
-        optimizer = mlx.optimizers.AdamW(
-            learning_rate=lr_scheduler,
-            # 過学習防止のため正則化
-            weight_decay=0.01,
-        )
 
         click.secho("[5/7] Training from scratch", fg="bright_green", bold=True)
         self.model.train()
@@ -230,7 +249,7 @@ class MlxTrainer(BaseTrainer):
                     set_spinner_text(
                         i_epoch=i_epoch,
                         i_step=i_step,
-                        lr=float(lr_scheduler(mx.array(i_step))),
+                        lr=float(optimizer.learning_rate or 0.0),
                         loss=float(loss),
                     )
 
@@ -281,7 +300,7 @@ class MlxTrainer(BaseTrainer):
                             + f"{colored('val_ppl=', 'cyan')}{val_ppl:.3f} "
                         )
 
-                        current_lr = float(lr_scheduler(mx.array(i_step)))
+                        current_lr = float(optimizer.learning_rate or 0.0)
                         progress += f"{colored('lr=', 'cyan')}{current_lr:.6f} "
 
                         if measure_time:

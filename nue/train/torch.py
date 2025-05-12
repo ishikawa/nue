@@ -17,11 +17,12 @@ import os
 import platform
 import time
 from contextlib import contextmanager
-from typing import Iterable, Optional, cast
+from typing import Any, Iterable, Optional, cast
 
 import click
 import torch
 from datasets import Dataset
+from safetensors.torch import save_file
 from termcolor import colored
 
 # from torch.amp.grad_scaler import GradScaler
@@ -94,6 +95,10 @@ class PyTorchTrainer(BaseTrainer):
     train_loader: DataLoader
     validation_loader: DataLoader
 
+    optimizer: torch.optim.Optimizer | None = None
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None
+    criterion: torch.nn.Module | None = None
+
     def __init__(
         self,
         /,
@@ -154,8 +159,89 @@ class PyTorchTrainer(BaseTrainer):
         self.train_loader = train_loader
         self.validation_loader = validation_loader
 
+    def on_train_prepare(self) -> None:
+        assert self.model is not None
+
+        # NOTE: Adam だと速く収束するが鋭い谷に落ちやすい
+        # optimizer = optim.Adam(model.parameters(), lr=lr)
+        # NOTE: SGD は安定性を増すが、データ量が少ない時は収束しなかった
+        self.optimizer = AdamW(
+            self.model.parameters(),
+            lr=self.options.lr,
+            # 過学習防止のため正則化
+            weight_decay=0.01,
+            fused=True,
+        )
+
+        # --- スケジューラーの設定 ---
+        # おおよその総学習ステップ数を計算 (エポック数 x 1エポックあたりのステップ数)
+        # len(dataset) はチャンク化後の訓練データセットのサンプル数
+
+        # 学習率スケジューラー: 線形ウォームアップ後、トレーニング終了まで余弦減衰
+        self.scheduler = get_cosine_schedule_with_warmup(
+            self.optimizer,
+            num_warmup_steps=self.num_warmup_steps,
+            num_training_steps=self.num_training_steps,
+        )
+
+        self.criterion = torch.nn.CrossEntropyLoss(
+            reduction="mean",
+            # Label smoothing for better generalization
+            label_smoothing=0.1,
+            # Padding token ID
+            ignore_index=IGNORE_TOKEN_ID,
+        )
+
+    def on_train_resume(
+        self, checkpoint_path: str
+    ) -> tuple[
+        int,  # epoch
+        int,  # step
+    ]:
+        assert self.model is not None
+        assert self.optimizer is not None
+        assert self.scheduler is not None
+
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+
+        self.model.load_state_dict(checkpoint["model_state"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        self.scheduler.load_state_dict(checkpoint["scheduler_state"])
+
+        last_epoch = int(checkpoint["epoch"])
+        last_step = int(checkpoint["step"])
+
+        start_epoch = last_epoch + 1
+        start_step = last_step + 1
+
+        self.scheduler.last_epoch = last_step
+
+        return start_epoch, start_step
+
+    @property
+    def checkpoint_path(self) -> str:
+        return os.path.join(self.options.model_dir, "checkpoint.pt")
+
+    def save_checkpoint(self, *, epoch: int, step: int) -> None:
+        assert self.model is not None
+        assert self.optimizer is not None
+        assert self.scheduler is not None
+
+        torch.save(
+            {
+                "model_state": self.model.state_dict(),
+                "optimizer_state": self.optimizer.state_dict(),
+                "scheduler_state": self.scheduler.state_dict(),
+                "epoch": epoch,
+                "step": step,
+            },
+            self.checkpoint_path,
+        )
+
     def _train(
         self,
+        start_epoch: int,
+        start_step: int,
         *,
         log_validation_max_tokens: int,
         measure_time: bool,
@@ -169,93 +255,13 @@ class PyTorchTrainer(BaseTrainer):
         assert self.validation_dataset is not None
         assert self.train_loader is not None
         assert self.validation_loader is not None
+        assert self.optimizer is not None
+        assert self.scheduler is not None
+        assert self.criterion is not None
 
-        # --------- 4) Optimizer & Scheduler ---------
-        click.secho("[4/7] Prepare optimizer & scheduler", fg="green", bold=True)
-
-        # NOTE: Adam だと速く収束するが鋭い谷に落ちやすい
-        # optimizer = optim.Adam(model.parameters(), lr=lr)
-        # NOTE: SGD は安定性を増すが、データ量が少ない時は収束しなかった
-        optimizer = AdamW(
-            model.parameters(),
-            lr=options.lr,
-            # 過学習防止のため正則化
-            weight_decay=0.01,
-            fused=True,
-        )
-
-        # --- スケジューラーの設定 ---
-        # おおよその総学習ステップ数を計算 (エポック数 x 1エポックあたりのステップ数)
-        # len(dataset) はチャンク化後の訓練データセットのサンプル数
-
-        # 学習率スケジューラー: 線形ウォームアップ後、トレーニング終了まで余弦減衰
-        scheduler = get_cosine_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=self.num_warmup_steps,
-            num_training_steps=self.num_training_steps,
-        )
-
-        criterion = torch.nn.CrossEntropyLoss(
-            reduction="mean",
-            # Label smoothing for better generalization
-            label_smoothing=0.1,
-            # Padding token ID
-            ignore_index=IGNORE_TOKEN_ID,
-        )
-
-        # --------- 5) 前回の学習状態を復元 ---------
-        parameters_path = os.path.join(options.model_dir, "parameters.pt")
-        checkpoint_path = os.path.join(options.model_dir, "checkpoint.pt")
-
-        checkpoint = None
-        start_epoch = 0
-        start_step = 0
-
-        if os.path.exists(checkpoint_path):
-            click.secho(
-                "[5/7] Resuming training from checkpoint", fg="green", bold=True
-            )
-            click.secho(f"Loading checkpoint from {checkpoint_path}", fg="cyan")
-
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
-            model.load_state_dict(checkpoint["model_state"])
-            optimizer.load_state_dict(checkpoint["optimizer_state"])
-            scheduler.load_state_dict(checkpoint["scheduler_state"])
-
-            last_epoch = int(checkpoint["epoch"])
-            last_step = int(checkpoint["step"])
-
-            start_epoch = last_epoch + 1
-            start_step = last_step + 1
-
-            scheduler.last_epoch = last_step
-
-            click.secho(f"Resuming training from epoch {start_epoch + 1}", fg="black")
-        else:
-            click.secho("[5/7] Training from scratch", fg="bright_green", bold=True)
-            os.makedirs(options.model_dir, exist_ok=True)
-
-        # --------- 6) 学習ループ ---------
-        def save_checkpoint(
-            spinner: Yaspin, i_epoch: int, i_step: int, *, verbose: bool = False
-        ):
-            if verbose:
-                spinner.write(
-                    colored(
-                        f"Saving checkpoint to {checkpoint_path}",
-                        "cyan",
-                    )
-                )
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "optimizer_state": optimizer.state_dict(),
-                    "scheduler_state": scheduler.state_dict(),
-                    "epoch": i_epoch,
-                    "step": i_step,
-                },
-                checkpoint_path,
-            )
+        optimizer = self.optimizer
+        scheduler = self.scheduler
+        criterion = self.criterion
 
         # 学習開始前に学習率を変更する（学習再開時に上書きしたい場合）
         if override_base_lr is not None:
@@ -490,7 +496,7 @@ class PyTorchTrainer(BaseTrainer):
                         # Save model checkpoint
                         if (i_step + 1) % options.save_interval == 0:
                             # Epoch is not finished yet, so -1
-                            save_checkpoint(spinner, i_epoch - 1, i_step)
+                            self.save_checkpoint(epoch=i_epoch - 1, step=i_step)
 
                     except StopIteration:
                         break
@@ -531,14 +537,21 @@ class PyTorchTrainer(BaseTrainer):
                 )
 
                 # Save epoch checkpoint
-                save_checkpoint(spinner, i_epoch, 0, verbose=True)
+                click.secho(
+                    f"Saving epoch checkpoint at {self.checkpoint_path}",
+                    fg="magenta",
+                    bold=True,
+                )
+                self.save_checkpoint(epoch=i_epoch, step=0)
 
         # --------- モデル保存 ---------
         click.secho(
-            f"[7/7] Saving model to {parameters_path}...", fg="bright_green", bold=True
+            f"[7/7] Saving model to {self.checkpoint_path}...",
+            fg="bright_green",
+            bold=True,
         )
 
-        torch.save(model.state_dict(), parameters_path)
+        self.save_checkpoint(epoch=options.n_epochs, step=0)
 
     def _generate_text(
         self,
@@ -637,3 +650,16 @@ def detect_device() -> torch.device:
         return torch.device("mps")
     else:
         return torch.device("cpu")
+
+
+def flatten_nested_dict(
+    d: dict[str, Any], parent_key: str = "", sep: str = "."
+) -> dict[str, Any]:
+    items = {}
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.update(flatten_nested_dict(v, new_key, sep=sep))
+        else:
+            items[new_key] = v
+    return items

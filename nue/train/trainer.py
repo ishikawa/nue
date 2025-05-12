@@ -88,7 +88,30 @@ class BaseTrainer(ABC):
             fg="cyan",
         )
 
+        # --------- 4) Optimizer & Scheduler ---------
+        click.secho("[4/7] Prepare optimizer & scheduler", fg="green", bold=True)
+        self.on_train_prepare()
+
+        # --------- 5) 前回の学習状態を復元 ---------
+        start_epoch = 0
+        start_step = 0
+
+        if os.path.exists(self.checkpoint_path):
+            click.secho(
+                f"[5/7] Resuming training from checkpoint {self.checkpoint_path}",
+                fg="green",
+                bold=True,
+            )
+            start_epoch, start_step = self.on_train_resume(
+                checkpoint_path=self.checkpoint_path
+            )
+        else:
+            click.secho("[5/7] Training from scratch", fg="bright_green", bold=True)
+            os.makedirs(self.options.model_dir, exist_ok=True)
+
         self._train(
+            start_epoch=start_epoch,
+            start_step=start_step,
             log_validation_max_tokens=log_validation_max_tokens,
             measure_time=measure_time,
             override_base_lr=override_base_lr,
@@ -115,6 +138,19 @@ class BaseTrainer(ABC):
     ) -> None:
         raise NotImplementedError
 
+    @abstractmethod
+    def on_train_prepare(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def on_train_resume(
+        self, checkpoint_path: str
+    ) -> tuple[
+        int,  # epoch
+        int,  # step
+    ]:
+        raise NotImplementedError
+
     @property
     def num_training_steps_per_epoch(self) -> int:
         assert self.train_dataset is not None
@@ -128,9 +164,30 @@ class BaseTrainer(ABC):
     def num_warmup_steps(self) -> int:
         return int(min(self.num_training_steps * 0.05, self.options.max_warmup_steps))
 
+    @property
+    @abstractmethod
+    def checkpoint_path(self) -> str:
+        """
+        The path to the checkpoint file. It must be the file path under the model directory.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_checkpoint(self, *, epoch: int, step: int) -> None:
+        """
+        Save the model checkpoint.
+
+        Args:
+            epoch (int): The current epoch.
+            step (int): The current step.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def _train(
         self,
+        start_epoch: int,
+        start_step: int,
         *,
         log_validation_max_tokens: int,
         measure_time: bool,
