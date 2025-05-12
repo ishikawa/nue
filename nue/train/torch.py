@@ -109,7 +109,7 @@ class PyTorchTrainer(BaseTrainer):
     def device_type(self) -> str:
         return self.device.type
 
-    def initialize_model(self) -> None:
+    def on_train_initialize(self) -> None:
         model = MinimalGPT(self.config).to(torch.bfloat16).to(self.device)
         model.apply(init_weights)
 

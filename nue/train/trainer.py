@@ -44,23 +44,21 @@ class BaseTrainer(ABC):
             self.manual_seed(self.options.seed)
 
         # --------- 1) Configuration ---------
-        click.secho("[1/7] Configuration", fg="green", bold=True)
+        click.secho("[1/7] Initialize", fg="green", bold=True)
 
         click.secho(
             f"vocab_size: {self.config.vocab_size}, device: {self.device_type}",
-            fg="cyan",
+            fg="white",
         )
 
         # Save hyperparameters in JSON format
         with open(os.path.join(self.options.model_dir, "hparams.json"), "w") as f:
             json.dump(dataclasses.asdict(self.config), f, indent=4)
 
-        # --------- 2) Model 初期化 ---------
-        click.secho("[2/7] Initialize model", fg="green", bold=True)
-        self.initialize_model()
+        self.on_train_initialize()
 
-        # --------- 3) データセット準備 ---------
-        click.secho("[3/7] Prepare dataset", fg="green", bold=True)
+        # --------- 2) データセット準備 ---------
+        click.secho("[2/7] Prepare dataset", fg="green", bold=True)
 
         dataset, total_tokens = load_train_dataset(
             ctx_len=self.options.ctx_len,
@@ -106,7 +104,7 @@ class BaseTrainer(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def initialize_model(self) -> None:
+    def on_train_initialize(self) -> None:
         raise NotImplementedError
 
     @abstractmethod

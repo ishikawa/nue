@@ -59,7 +59,7 @@ class MlxTrainer(BaseTrainer):
             case _:
                 raise ValueError(f"Unknown device type: {mx.default_device().type}")
 
-    def initialize_model(self) -> None:
+    def on_train_initialize(self) -> None:
         pass
 
     def on_load_dataset(
