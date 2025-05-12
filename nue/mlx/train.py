@@ -49,12 +49,12 @@ class MlxTrainer(BaseTrainer):
         super().__init__(options)
         self.model = NueLM(self.config)
 
-    def train(
+    def _train(
         self,
         *,
-        log_validation_max_tokens: int = 50_000,
-        measure_time: bool = False,
-        override_base_lr: float | None = None,
+        log_validation_max_tokens: int,
+        measure_time: bool,
+        override_base_lr: float | None,
     ) -> None:
         options = self.options
 

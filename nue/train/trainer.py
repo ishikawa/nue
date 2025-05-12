@@ -1,4 +1,4 @@
-from abc import ABC
+from abc import ABC, abstractmethod
 
 from nue.model.base import GPTConfig
 
@@ -20,3 +20,26 @@ class BaseTrainer(ABC):
             n_layers=options.n_layers,
             mlp_ratio=options.mlp_ratio,
         )
+
+    def train(
+        self,
+        *,
+        log_validation_max_tokens: int = 50_000,
+        measure_time: bool = False,
+        override_base_lr: float | None = None,
+    ) -> None:
+        self._train(
+            log_validation_max_tokens=log_validation_max_tokens,
+            measure_time=measure_time,
+            override_base_lr=override_base_lr,
+        )
+
+    @abstractmethod
+    def _train(
+        self,
+        *,
+        log_validation_max_tokens: int,
+        measure_time: bool,
+        override_base_lr: float | None,
+    ) -> None:
+        raise NotImplementedError
