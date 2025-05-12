@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import math
 import os
 from abc import ABC, abstractmethod
 
@@ -84,6 +85,11 @@ class BaseTrainer(ABC):
 
         self.on_load_dataset(train_dataset, validation_dataset)
 
+        click.secho(
+            f"Estimated total steps: {self.num_training_steps}, Warmup steps: {self.num_warmup_steps}",
+            fg="cyan",
+        )
+
         self._train(
             log_validation_max_tokens=log_validation_max_tokens,
             measure_time=measure_time,
@@ -110,6 +116,19 @@ class BaseTrainer(ABC):
         validation_dataset: Dataset,
     ) -> None:
         raise NotImplementedError
+
+    @property
+    def num_training_steps_per_epoch(self) -> int:
+        assert self.train_dataset is not None
+        return math.ceil(len(self.train_dataset) / self.options.batch_size)
+
+    @property
+    def num_training_steps(self) -> int:
+        return self.num_training_steps_per_epoch * self.options.n_epochs
+
+    @property
+    def num_warmup_steps(self) -> int:
+        return int(min(self.num_training_steps * 0.05, self.options.max_warmup_steps))
 
     @abstractmethod
     def _train(

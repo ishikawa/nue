@@ -115,16 +115,6 @@ class MlxTrainer(BaseTrainer):
         # --- スケジューラーの設定 ---
         # おおよその総学習ステップ数を計算 (エポック数 x 1エポックあたりのステップ数)
         # len(dataset) はチャンク化後の訓練データセットのサンプル数
-        num_training_steps_per_epoch = math.ceil(
-            len(self.train_dataset) / options.batch_size
-        )
-        num_training_steps = num_training_steps_per_epoch * options.n_epochs
-        num_warmup_steps = int(min(num_training_steps * 0.05, options.max_warmup_steps))
-
-        click.secho(
-            f"Estimated total steps: {num_training_steps}, Warmup steps: {num_warmup_steps}",
-            fg="cyan",
-        )
 
         def loss_fn(
             model: nn.Module,
@@ -139,8 +129,8 @@ class MlxTrainer(BaseTrainer):
 
         lr_scheduler = get_cosine_schedule_with_warmup(
             base_lr=options.lr,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=num_training_steps,
+            num_warmup_steps=self.num_warmup_steps,
+            num_training_steps=self.num_training_steps,
         )
 
         # NOTE: Adam だと速く収束するが鋭い谷に落ちやすい
@@ -164,7 +154,7 @@ class MlxTrainer(BaseTrainer):
                 lr: float,
                 loss: Optional[float] = None,
             ):
-                p = (i_step + 1) / num_training_steps_per_epoch
+                p = (i_step + 1) / self.num_training_steps_per_epoch
                 spinner.text = (
                     colored(
                         f"Epoch {i_epoch + 1}/{options.n_epochs} Step {i_step + 1} ({p:.1%})",

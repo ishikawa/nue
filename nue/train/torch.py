@@ -187,22 +187,12 @@ class PyTorchTrainer(BaseTrainer):
         # --- スケジューラーの設定 ---
         # おおよその総学習ステップ数を計算 (エポック数 x 1エポックあたりのステップ数)
         # len(dataset) はチャンク化後の訓練データセットのサンプル数
-        num_training_steps_per_epoch = math.ceil(
-            len(self.train_dataset) / options.batch_size
-        )
-        num_training_steps = num_training_steps_per_epoch * options.n_epochs
-        num_warmup_steps = int(min(num_training_steps * 0.05, options.max_warmup_steps))
-
-        click.secho(
-            f"Estimated total steps: {num_training_steps}, Warmup steps: {num_warmup_steps}",
-            fg="cyan",
-        )
 
         # 学習率スケジューラー: 線形ウォームアップ後、トレーニング終了まで余弦減衰
         scheduler = get_cosine_schedule_with_warmup(
             optimizer,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=num_training_steps,
+            num_warmup_steps=self.num_warmup_steps,
+            num_training_steps=self.num_training_steps,
         )
 
         criterion = torch.nn.CrossEntropyLoss(
@@ -302,7 +292,7 @@ class PyTorchTrainer(BaseTrainer):
                 loss: Optional[float] = None,
                 logits_mean: Optional[float] = None,
             ):
-                p = (i_step + 1) / num_training_steps_per_epoch
+                p = (i_step + 1) / self.num_training_steps_per_epoch
                 spinner.text = (
                     colored(
                         f"Epoch {i_epoch + 1}/{options.n_epochs} Step {i_step + 1} ({p:.1%})",
