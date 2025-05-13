@@ -208,7 +208,7 @@ class MlxTrainer(BaseTrainer):
 
                 # NOTE: MLX は遅延計算なので、処理時間を計測するためには結果を eval する必要がある。
                 if measure_time:
-                    mx.eval(loss, grads)
+                    mx.eval(loss)
 
             with iteration.measure_backward():
                 # Update the model with the gradients. So far no computation has happened.
