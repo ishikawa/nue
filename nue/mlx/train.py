@@ -152,9 +152,7 @@ class MlxTrainer(BaseTrainer):
         return iter(self.validation_stream)
 
     def synchronize_device(self) -> None:
-        assert self.model is not None
         mx.synchronize()
-        mx.eval(self.model.parameters())
 
     @property
     def learning_rate(self) -> float:
@@ -199,14 +197,18 @@ class MlxTrainer(BaseTrainer):
             with iteration.measure_io():
                 batch = collate(batch, config=self.config)
 
-                input_ids = batch["input_ids"]
-                attn_mask = batch["attention_mask"]
-                labels = batch["labels"]
+            input_ids = batch["input_ids"]
+            attn_mask = batch["attention_mask"]
+            labels = batch["labels"]
 
             with iteration.measure_forward():
                 loss, grads = loss_and_grad_fn(
                     self.model, input_ids, labels, attention_mask=attn_mask
                 )
+
+                # NOTE: MLX は遅延計算なので、処理時間を計測するためには結果を eval する必要がある。
+                if measure_time:
+                    mx.eval(loss, grads)
 
             with iteration.measure_backward():
                 # Update the model with the gradients. So far no computation has happened.
