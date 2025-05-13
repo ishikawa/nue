@@ -251,6 +251,7 @@ def train_command(
             save_interval=save_interval,
             override_data_size=override_data_size,
             max_warmup_steps=max_warmup_steps,
+            framework=framework,
         )
 
         training_session = TrainingSession(
@@ -264,7 +265,7 @@ def train_command(
             )
 
     click.secho(
-        f"Using {framework} trainer: "
+        f"Using {training_options.framework} trainer: "
         + f"n_epochs={training_options.n_epochs}, batch_size={training_options.batch_size}, ctx_length={training_options.ctx_len}, "
         + f"n_embed={training_options.n_embed}, n_heads={training_options.n_heads}, "
         + f"n_layers={training_options.n_layers}, mlp_ratio={training_options.mlp_ratio}, "
@@ -273,7 +274,7 @@ def train_command(
         fg="white",
     )
 
-    if framework == "torch":
+    if training_options.framework == "torch":
         from nue.train.torch import PyTorchTrainer
 
         trainer = PyTorchTrainer(training_options)
@@ -282,7 +283,7 @@ def train_command(
             log_validation_max_tokens=log_validation_max_tokens,
             override_base_lr=override_base_lr,
         )
-    elif framework == "mlx":
+    elif training_options.framework == "mlx":
         from nue.mlx.train import MlxTrainer
 
         trainer = MlxTrainer(training_options)

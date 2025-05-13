@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import math
 import os
 import random
@@ -119,14 +120,28 @@ class MlxTrainer(BaseTrainer):
         int,  # epoch
         int,  # step
     ]:
-        return 0, 0
+        # Load metadata
+        meta_path = checkpoint_path.replace(".safetensors", ".meta.json")
+        with open(meta_path, "r") as f:
+            meta = json.load(f)
+        # Load model weights
+        self.model.load_weights(checkpoint_path)
+
+        return meta["epoch"], meta["step"]
 
     @property
     def checkpoint_path(self) -> str:
         return os.path.join(self.options.model_dir, "checkpoint.safetensors")
 
     def save_checkpoint(self, *, epoch: int, step: int) -> None:
-        pass
+        assert self.model is not None
+
+        self.model.save_weights(self.checkpoint_path)
+
+        # Also save json metadata for convenience
+        meta_path = self.checkpoint_path.replace(".safetensors", ".meta.json")
+        with open(meta_path, "w") as f:
+            json.dump({"epoch": epoch, "step": step}, f)
 
     def batch_train_iter(self) -> Iterator[dict[str, Any]]:
         assert self.train_stream is not None
