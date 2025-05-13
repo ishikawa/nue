@@ -847,6 +847,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "click" },
     { name = "datasets" },
+    { name = "safetensors" },
     { name = "sentencepiece" },
     { name = "termcolor" },
     { name = "torch" },
@@ -875,6 +876,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.6.0" },
     { name = "mlx", marker = "extra == 'mlx'", specifier = "==0.25.2" },
     { name = "mlx-data", marker = "extra == 'mlx'", specifier = ">=0.1.0" },
+    { name = "safetensors", specifier = ">=0.5.3" },
     { name = "sentencepiece", specifier = "==0.2.0" },
     { name = "termcolor", specifier = ">=2.3.0" },
     { name = "torch", specifier = ">=2.7.0" },

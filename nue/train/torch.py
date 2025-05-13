@@ -12,34 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import dataclasses
-import json
-import math
 import os
 import platform
-import time
 from contextlib import contextmanager
-from typing import Iterable, Optional, cast
+from typing import Any, Iterator, Optional, cast
 
 import click
 import torch
-from termcolor import colored
+from datasets import Dataset
 
 # from torch.amp.grad_scaler import GradScaler
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torchtune.training import get_cosine_schedule_with_warmup
-from yaspin import yaspin
-from yaspin.core import Yaspin
 
 from nue.model.torch import MinimalGPT, init_weights
-from nue.train.dataset import load_train_dataset
 from nue.train.trainer import BaseTrainer
-from nue.utils import format_number_abbrev
 
 from .base import TrainingOptions
-from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
+from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID
 
 # NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出る
 #
@@ -94,6 +86,13 @@ class PyTorchTrainer(BaseTrainer):
     model: torch.nn.Module | None = None
     device: torch.device
 
+    train_loader: DataLoader
+    validation_loader: DataLoader
+
+    optimizer: torch.optim.Optimizer | None = None
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None
+    criterion: torch.nn.Module | None = None
+
     def __init__(
         self,
         /,
@@ -102,33 +101,14 @@ class PyTorchTrainer(BaseTrainer):
         super().__init__(options)
         self.device = detect_device()
 
-    def train(
-        self,
-        *,
-        log_validation_max_tokens: int = 50_000,
-        measure_time: bool = False,
-        override_base_lr: float | None = None,
-    ) -> None:
-        options = self.options
+    def manual_seed(self, seed: int) -> None:
+        torch.manual_seed(seed)
 
-        # シード設定
-        if options.seed is not None:
-            torch.manual_seed(options.seed)
+    @property
+    def device_type(self) -> str:
+        return self.device.type
 
-        # --------- 1) Configuration ---------
-        click.secho("[1/7] Configuration", fg="green", bold=True)
-
-        click.secho(
-            f"vocab_size: {self.config.vocab_size}, device: {self.device}", fg="cyan"
-        )
-
-        # Save hyperparameters in JSON format
-        with open(os.path.join(self.options.model_dir, "hparams.json"), "w") as f:
-            json.dump(dataclasses.asdict(self.config), f, indent=4)
-
-        # --------- 2) Model 初期化 ---------
-        click.secho("[2/7] Initialize model", fg="green", bold=True)
-
+    def on_train_initialize(self) -> None:
         model = MinimalGPT(self.config).to(torch.bfloat16).to(self.device)
         model.apply(init_weights)
 
@@ -138,18 +118,11 @@ class PyTorchTrainer(BaseTrainer):
 
         self.model = model
 
-        # --------- 3) データセット準備 ---------
-        click.secho("[3/7] Prepare dataset", fg="green", bold=True)
-
-        dataset, total_tokens = load_train_dataset(
-            ctx_len=options.ctx_len,
-            chunk_overlap_len=options.chunk_overlap_len,
-            override_data_size=options.override_data_size,
-        )
-        train_and_test_datasets = dataset.train_test_split(test_size=0.05)
-        validation_dataset = train_and_test_datasets["test"]
-        train_dataset = train_and_test_datasets["train"]
-
+    def on_load_dataset(
+        self,
+        train_dataset: Dataset,
+        validation_dataset: Dataset,
+    ) -> None:
         train_dataset.set_format(type="torch", columns=["input_ids"])
         validation_dataset.set_format(type="torch", columns=["input_ids"])
 
@@ -163,7 +136,7 @@ class PyTorchTrainer(BaseTrainer):
 
         train_loader = DataLoader(
             train_dataset,  # type: ignore
-            batch_size=options.batch_size,
+            batch_size=self.options.batch_size,
             shuffle=True,
             collate_fn=collate_pad,
             num_workers=data_loader_num_workers,
@@ -172,29 +145,23 @@ class PyTorchTrainer(BaseTrainer):
         )
         validation_loader = DataLoader(
             validation_dataset,  # type: ignore
-            batch_size=options.batch_size,
+            batch_size=self.options.batch_size,
             shuffle=False,
             collate_fn=collate_pad,
         )
 
-        click.secho(
-            f"Total tokens: {format_number_abbrev(total_tokens)} ({total_tokens:,})",
-            fg="cyan",
-        )
-        click.secho(
-            f"Loader created (train: {len(train_dataset):,} rows, val: {len(validation_dataset):,} rows)",
-            fg="cyan",
-        )
+        self.train_loader = train_loader
+        self.validation_loader = validation_loader
 
-        # --------- 4) Optimizer & Scheduler ---------
-        click.secho("[4/7] Prepare optimizer & scheduler", fg="green", bold=True)
+    def on_train_prepare(self) -> None:
+        assert self.model is not None
 
         # NOTE: Adam だと速く収束するが鋭い谷に落ちやすい
         # optimizer = optim.Adam(model.parameters(), lr=lr)
         # NOTE: SGD は安定性を増すが、データ量が少ない時は収束しなかった
-        optimizer = AdamW(
-            model.parameters(),
-            lr=options.lr,
+        self.optimizer = AdamW(
+            self.model.parameters(),
+            lr=self.options.lr,
             # 過学習防止のため正則化
             weight_decay=0.01,
             fused=True,
@@ -203,25 +170,15 @@ class PyTorchTrainer(BaseTrainer):
         # --- スケジューラーの設定 ---
         # おおよその総学習ステップ数を計算 (エポック数 x 1エポックあたりのステップ数)
         # len(dataset) はチャンク化後の訓練データセットのサンプル数
-        num_training_steps_per_epoch = math.ceil(
-            len(train_dataset) / options.batch_size
-        )
-        num_training_steps = num_training_steps_per_epoch * options.n_epochs
-        num_warmup_steps = int(min(num_training_steps * 0.05, options.max_warmup_steps))
-
-        click.secho(
-            f"Estimated total steps: {num_training_steps}, Warmup steps: {num_warmup_steps}",
-            fg="cyan",
-        )
 
         # 学習率スケジューラー: 線形ウォームアップ後、トレーニング終了まで余弦減衰
-        scheduler = get_cosine_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=num_training_steps,
+        self.scheduler = get_cosine_schedule_with_warmup(
+            self.optimizer,
+            num_warmup_steps=self.num_warmup_steps,
+            num_training_steps=self.num_training_steps,
         )
 
-        criterion = torch.nn.CrossEntropyLoss(
+        self.criterion = torch.nn.CrossEntropyLoss(
             reduction="mean",
             # Label smoothing for better generalization
             label_smoothing=0.1,
@@ -229,59 +186,89 @@ class PyTorchTrainer(BaseTrainer):
             ignore_index=IGNORE_TOKEN_ID,
         )
 
-        # --------- 5) 前回の学習状態を復元 ---------
-        parameters_path = os.path.join(options.model_dir, "parameters.pt")
-        checkpoint_path = os.path.join(options.model_dir, "checkpoint.pt")
+    def on_train_resume(
+        self, checkpoint_path: str
+    ) -> tuple[
+        int,  # epoch
+        int,  # step
+    ]:
+        assert self.model is not None
+        assert self.optimizer is not None
+        assert self.scheduler is not None
 
-        checkpoint = None
-        start_epoch = 0
-        start_step = 0
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
-        if os.path.exists(checkpoint_path):
-            click.secho(
-                "[5/7] Resuming training from checkpoint", fg="green", bold=True
-            )
-            click.secho(f"Loading checkpoint from {checkpoint_path}", fg="cyan")
+        self.model.load_state_dict(checkpoint["model_state"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        self.scheduler.load_state_dict(checkpoint["scheduler_state"])
 
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
-            model.load_state_dict(checkpoint["model_state"])
-            optimizer.load_state_dict(checkpoint["optimizer_state"])
-            scheduler.load_state_dict(checkpoint["scheduler_state"])
+        last_epoch = int(checkpoint["epoch"])
+        last_step = int(checkpoint["step"])
 
-            last_epoch = int(checkpoint["epoch"])
-            last_step = int(checkpoint["step"])
+        start_epoch = last_epoch + 1
+        start_step = last_step + 1
 
-            start_epoch = last_epoch + 1
-            start_step = last_step + 1
+        self.scheduler.last_epoch = last_step
 
-            scheduler.last_epoch = last_step
+        return start_epoch, start_step
 
-            click.secho(f"Resuming training from epoch {start_epoch + 1}", fg="black")
-        else:
-            click.secho("[5/7] Training from scratch", fg="bright_green", bold=True)
-            os.makedirs(options.model_dir, exist_ok=True)
+    @property
+    def checkpoint_path(self) -> str:
+        return os.path.join(self.options.model_dir, "checkpoint.pt")
 
-        # --------- 6) 学習ループ ---------
-        def save_checkpoint(
-            spinner: Yaspin, i_epoch: int, i_step: int, *, verbose: bool = False
-        ):
-            if verbose:
-                spinner.write(
-                    colored(
-                        f"Saving checkpoint to {checkpoint_path}",
-                        "cyan",
-                    )
-                )
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "optimizer_state": optimizer.state_dict(),
-                    "scheduler_state": scheduler.state_dict(),
-                    "epoch": i_epoch,
-                    "step": i_step,
-                },
-                checkpoint_path,
-            )
+    def save_checkpoint(self, *, epoch: int, step: int) -> None:
+        assert self.model is not None
+        assert self.optimizer is not None
+        assert self.scheduler is not None
+
+        torch.save(
+            {
+                "model_state": self.model.state_dict(),
+                "optimizer_state": self.optimizer.state_dict(),
+                "scheduler_state": self.scheduler.state_dict(),
+                "epoch": epoch,
+                "step": step,
+            },
+            self.checkpoint_path,
+        )
+
+    def batch_train_iter(self) -> Iterator[dict[str, Any]]:
+        return iter(self.train_loader)
+
+    def batch_validation_iter(self) -> Iterator[dict[str, Any]]:
+        return iter(self.validation_loader)
+
+    def synchronize_device(self) -> None:
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        elif self.device.type == "mps":
+            torch.mps.synchronize()
+
+    @property
+    def learning_rate(self) -> float:
+        assert self.scheduler is not None
+        return self.scheduler.get_last_lr()[0]
+
+    def _train(
+        self,
+        *,
+        log_validation_max_tokens: int,
+        measure_time: bool,
+        override_base_lr: float | None,
+    ) -> None:
+        assert self.model is not None
+        assert self.train_dataset is not None
+        assert self.validation_dataset is not None
+        assert self.train_loader is not None
+        assert self.validation_loader is not None
+        assert self.optimizer is not None
+        assert self.scheduler is not None
+        assert self.criterion is not None
+
+        model = self.model
+        optimizer = self.optimizer
+        scheduler = self.scheduler
+        criterion = self.criterion
 
         # 学習開始前に学習率を変更する（学習再開時に上書きしたい場合）
         if override_base_lr is not None:
@@ -297,341 +284,123 @@ class PyTorchTrainer(BaseTrainer):
                 fg="cyan",
             )
 
-        click.secho("[6/7] Start training loop", fg="green", bold=True)
         model.train()
-
-        loss = None
-        logits_mean = None
 
         # MPS では AMP (自動混合精度) を使用しない
         use_amp = self.device.type != "mps"
 
         # bfloat16 は十分な精度を持つので、GradScaler 不要
         # grad_scaler = GradScaler(self.device.type, enabled=use_amp)
-        with yaspin().cyan as spinner:
 
-            def set_spinner_text(
-                i_epoch: int,
-                i_step: int,
-                *,
-                lr: float,
-                loss: Optional[float] = None,
-                logits_mean: Optional[float] = None,
+        for iteration, batch in self.train_loop(
+            log_validation_max_tokens=log_validation_max_tokens,
+            measure_time=measure_time,
+        ):
+            # Runs the forward pass under `autocast`.
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=torch.bfloat16,
+                enabled=use_amp,
             ):
-                p = (i_step + 1) / num_training_steps_per_epoch
-                spinner.text = (
-                    colored(
-                        f"Epoch {i_epoch + 1}/{options.n_epochs} Step {i_step + 1} ({p:.1%})",
-                        color="cyan",
-                    )
-                    + " ("
-                    + f"lr: {lr:.8f}"
-                    + (f", loss: {loss:.3f}" if loss is not None else "")
-                    + (
-                        f", logits mean: {logits_mean:.3f}"
-                        if logits_mean is not None
-                        else ""
-                    )
-                    + ")"
-                )
-
-            for i_epoch in range(start_epoch, options.n_epochs):
-                epoch_loss = 0.0
-                total_loss = 0.0
-
-                t0 = 0.0
-                t1 = 0.0
-                t2 = 0.0
-                t3 = 0.0
-                t4 = 0.0
-
-                io_elapsed = 0.0
-                forward_elapsed = 0.0
-                backward_elapsed = 0.0
-                optimizer_elapsed = 0.0
-                step_elapsed = 0.0
-
-                i_step = 0
-                loader_iter = iter(train_loader)
-
-                while True:
-                    try:
-                        # 学習再開時には、開始前のデータをスキップする
-                        if i_epoch == start_epoch and i_step < start_step:
-                            next(loader_iter)
-                            continue
-
-                        set_spinner_text(
-                            i_epoch=i_epoch,
-                            i_step=i_step,
-                            lr=scheduler.get_last_lr()[0],
-                            loss=loss,
-                            logits_mean=logits_mean,
-                        )
-
-                        if measure_time:
-                            torch.mps.synchronize()
-                            t0 = time.perf_counter()
-
-                        batch = next(loader_iter)
-
-                        # Runs the forward pass under `autocast`.
-                        with torch.autocast(
-                            device_type=self.device.type,
-                            dtype=torch.bfloat16,
-                            enabled=use_amp,
-                        ):
-                            if measure_time:
-                                torch.mps.synchronize()
-                                t1 = time.perf_counter()
-
-                            input_ids = batch["input_ids"].to(self.device)
-                            attention_mask = batch["attention_mask"].to(self.device)
-                            labels = batch["labels"].to(self.device)
-
-                            logits = self.model(
-                                input_ids,
-                                attention_mask=attention_mask,
-                            )
-
-                            if measure_time:
-                                torch.mps.synchronize()
-                                t2 = time.perf_counter()
-
-                            loss = criterion(
-                                logits.view(-1, self.config.vocab_size),
-                                labels.view(-1),
-                            )
-
-                        # Exits `autocast` before backward().
-                        logits_mean = logits.abs().mean().item()
-
-                        set_spinner_text(
-                            i_epoch=i_epoch,
-                            i_step=i_step,
-                            lr=scheduler.get_last_lr()[0],
-                            loss=loss.item(),
-                            logits_mean=logits_mean,
-                        )
-
-                        # 勾配の計算
-                        # grad_scaler.scale(loss).backward()
-                        loss.backward()
-
-                        if measure_time:
-                            torch.mps.synchronize()
-                            t3 = time.perf_counter()
-
-                        # 勾配のクリッピング
-                        # ただし、小規模モデルは毎 step でなくても安定する
-                        if i_step % 4 == 0:
-                            # Un-scales the gradients of optimizer's assigned parameters in-place
-                            # grad_scaler.unscale_(optimizer)
-                            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-                        # パラメータの更新
-                        # grad_scaler.step(optimizer)
-                        # grad_scaler.update()
-                        optimizer.step()
-                        scheduler.step()
-
-                        # 勾配の初期化
-                        optimizer.zero_grad()
-
-                        if measure_time:
-                            torch.mps.synchronize()
-                            t4 = time.perf_counter()
-
-                        total_loss += loss.item()
-                        epoch_loss += loss.item()
-
-                        io_elapsed += t1 - t0
-                        forward_elapsed += t2 - t1
-                        backward_elapsed += t3 - t2
-                        optimizer_elapsed += t4 - t3
-                        step_elapsed += t4 - t0
-
-                        # Log training progress
-                        if (i_step + 1) % options.log_interval == 0:
-                            try:
-                                model.eval()
-
-                                # Evaluate on validation dataset
-                                val_loss = self.evaluate(
-                                    validation_loader,
-                                    criterion,
-                                    max_tokens=log_validation_max_tokens,
-                                )
-
-                                # Generate samples
-                                with torch.no_grad():
-                                    for text in self.generate_samples():
-                                        spinner.write(
-                                            colored(
-                                                f"  SAMPLE: {text}",
-                                                "yellow",
-                                            )
-                                        )
-                            finally:
-                                model.train()
-
-                            # 平均 loss を計算
-                            avg_loss = total_loss / options.log_interval
-                            # perplexity
-                            ppl = math.exp(avg_loss)
-                            # validation perplexity
-                            val_ppl = math.exp(val_loss)
-
-                            progress = (
-                                f"  Step {i_step + 1} "
-                                + f"{colored('loss=', 'cyan')}{avg_loss:.3f} "
-                                + f"{colored('ppl=', 'cyan')}{ppl:.3f} "
-                                + f"{colored('val_loss=', 'cyan')}{val_loss:.3f} "
-                                + f"{colored('val_ppl=', 'cyan')}{val_ppl:.3f} "
-                            )
-
-                            lr = scheduler.get_last_lr()[0]
-                            progress += f"{colored('lr=', 'cyan')}{lr:.6f} "
-
-                            if measure_time:
-                                progress += "("
-                                progress += (
-                                    f"{step_elapsed / options.log_interval:.3f}s "
-                                )
-                                progress += f"{colored('io=', 'cyan')}{io_elapsed / options.log_interval:.3f}s "
-                                progress += f"{colored('forward=', 'cyan')}{forward_elapsed / options.log_interval:.3f}s "
-                                progress += f"{colored('backward=', 'cyan')}{backward_elapsed / options.log_interval:.3f}s "
-                                progress += f"{colored('optimizer=', 'cyan')}{optimizer_elapsed / options.log_interval:.3f}s"
-                                progress += ")"
-
-                            spinner.write(progress)
-
-                            total_loss = 0.0
-                            io_elapsed = 0.0
-                            forward_elapsed = 0.0
-                            backward_elapsed = 0.0
-                            optimizer_elapsed = 0.0
-                            step_elapsed = 0.0
-
-                        # Save model checkpoint
-                        if (i_step + 1) % options.save_interval == 0:
-                            # Epoch is not finished yet, so -1
-                            save_checkpoint(spinner, i_epoch - 1, i_step)
-
-                    except StopIteration:
-                        break
-                    finally:
-                        i_step += 1
-
-                # エポック終わりのサンプル生成と評価
-                try:
-                    model.eval()
-
-                    # 評価
-                    val_loss = self.evaluate(validation_loader, criterion)
-
-                    # サンプル生成
-                    with torch.no_grad():
-                        for text in self.generate_samples():
-                            spinner.write(
-                                colored(
-                                    f"  Sample generation: {text}",
-                                    "yellow",
-                                )
-                            )
-                finally:
-                    model.train()
-
-                avg_epoch_loss = epoch_loss / len(train_loader)
-
-                spinner.write(
-                    colored(
-                        f"Epoch {i_epoch + 1}/{options.n_epochs} finished",
-                        "magenta",
-                        attrs=["bold"],
-                    )
-                    + colored(
-                        f" (avg loss={avg_epoch_loss:.4f}, val loss={val_loss:.4f})",
-                        "magenta",
-                    )
-                )
-
-                # Save epoch checkpoint
-                save_checkpoint(spinner, i_epoch, 0, verbose=True)
-
-        # --------- モデル保存 ---------
-        click.secho(
-            f"[7/7] Saving model to {parameters_path}...", fg="bright_green", bold=True
-        )
-
-        torch.save(model.state_dict(), parameters_path)
-
-    def _generate_text(
-        self,
-        prompt: str,
-        *,
-        max_new_length: int,
-    ) -> str:
-        assert self.model is not None
-
-        ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
-        idx = torch.tensor([ids], dtype=torch.long).to(self.device)
-        out = self._generate(idx, max_new_tokens=max_new_length)[0].cpu().tolist()
-
-        return TOKENIZER.DecodeIds(out)
-
-    @torch.no_grad()
-    def _generate(self, idx: torch.Tensor, max_new_tokens: int = 32):
-        """Greedy text generation (for demo)."""
-        assert self.model is not None
-        for _ in range(max_new_tokens):
-            idx_cond = idx[:, -self.config.ctx_len :]
-            logits = self.model(idx_cond)[:, -1, :]  # [B,vocab]
-            next_tok = logits.argmax(dim=-1, keepdim=True)
-            idx = torch.cat([idx, next_tok], dim=1)
-        return idx
-
-    def generate_samples(self) -> Iterable[str]:
-        with torch.no_grad():
-            with self.use_cpu_on_mps():
-                for prompt in ["富士山は", "Alan Turing is "]:
-                    yield self._generate_text(prompt, max_new_length=50)
-
-    def evaluate(
-        self,
-        dataloader: DataLoader,
-        criterion: torch.nn.Module,
-        *,
-        max_tokens: Optional[int] = None,
-    ) -> float:
-        assert self.model is not None
-
-        total_loss = 0.0
-        total_tokens = 0
-
-        with torch.no_grad():
-            with self.use_cpu_on_mps():
-                for batch in dataloader:
+                with iteration.measure_forward():
                     input_ids = batch["input_ids"].to(self.device)
                     attention_mask = batch["attention_mask"].to(self.device)
                     labels = batch["labels"].to(self.device)
 
-                    logits = self.model(
+                    logits = model(
                         input_ids,
                         attention_mask=attention_mask,
                     )
 
-                    loss = criterion(
-                        logits.view(-1, self.config.vocab_size),
-                        labels.view(-1),
-                    )
+                loss = criterion(
+                    logits.view(-1, self.config.vocab_size),
+                    labels.view(-1),
+                )
+                iteration.loss = float(loss.item())
 
-                    num_tokens = (labels != IGNORE_TOKEN_ID).sum().item()
-                    total_loss += loss.item() * num_tokens
-                    total_tokens += num_tokens
+            # Exits `autocast` before backward().
+            logits_mean = logits.abs().mean().item()
 
-                    if max_tokens is not None and total_tokens >= max_tokens:
-                        break
+            iteration.set_spinner_text(
+                logits_mean=logits_mean,
+            )
+
+            with iteration.measure_backward():
+                # 勾配の計算
+                # grad_scaler.scale(loss).backward()
+                loss.backward()
+
+            # 勾配のクリッピング
+            # ただし、小規模モデルは毎 step でなくても安定する
+            if iteration.i_step % 4 == 0:
+                # Un-scales the gradients of optimizer's assigned parameters in-place
+                # grad_scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            with iteration.measure_optimizer():
+                # パラメータの更新
+                # grad_scaler.step(optimizer)
+                # grad_scaler.update()
+                optimizer.step()
+                scheduler.step()
+
+                # 勾配の初期化
+                optimizer.zero_grad()
+
+    @torch.no_grad()
+    def generate(self, ids: list[int], max_new_tokens: int = 32) -> list[int]:
+        assert self.model is not None
+
+        with self.use_cpu_on_mps():
+            idx = torch.tensor([ids], dtype=torch.long).to(self.device)
+
+            for _ in range(max_new_tokens):
+                idx_cond = idx[:, -self.config.ctx_len :]
+                logits = self.model(idx_cond)[:, -1, :]  # [B,vocab]
+                next_tok = logits.argmax(dim=-1, keepdim=True)
+                idx = torch.cat([idx, next_tok], dim=1)
+
+        return idx[0].cpu().tolist()
+
+    def evaluate(
+        self,
+        *,
+        max_tokens: Optional[int] = None,
+    ) -> float:
+        assert self.model is not None
+        assert self.validation_loader is not None
+        assert self.criterion is not None
+
+        total_loss = 0.0
+        total_tokens = 0
+
+        self.model.eval()
+        try:
+            with torch.no_grad():
+                with self.use_cpu_on_mps():
+                    for batch in self.validation_loader:
+                        input_ids = batch["input_ids"].to(self.device)
+                        attention_mask = batch["attention_mask"].to(self.device)
+                        labels = batch["labels"].to(self.device)
+
+                        logits = self.model(
+                            input_ids,
+                            attention_mask=attention_mask,
+                        )
+
+                        loss = self.criterion(
+                            logits.view(-1, self.config.vocab_size),
+                            labels.view(-1),
+                        )
+
+                        num_tokens = (labels != IGNORE_TOKEN_ID).sum().item()
+                        total_loss += loss.item() * num_tokens
+                        total_tokens += num_tokens
+
+                        if max_tokens is not None and total_tokens >= max_tokens:
+                            break
+        finally:
+            self.model.train()
 
         avg_loss = total_loss / total_tokens
         return avg_loss
@@ -663,3 +432,16 @@ def detect_device() -> torch.device:
         return torch.device("mps")
     else:
         return torch.device("cpu")
+
+
+def flatten_nested_dict(
+    d: dict[str, Any], parent_key: str = "", sep: str = "."
+) -> dict[str, Any]:
+    items = {}
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.update(flatten_nested_dict(v, new_key, sep=sep))
+        else:
+            items[new_key] = v
+    return items
