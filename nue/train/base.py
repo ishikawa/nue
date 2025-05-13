@@ -19,6 +19,7 @@ class TrainingOptions:
     log_interval: int
     save_interval: int
     model_dir: str
+    framework: str
     override_data_size: Optional[str] = None
 
 
