@@ -12,32 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import math
 import os
 import platform
-import time
 from contextlib import contextmanager
-from typing import Any, Iterable, Iterator, Optional, cast
+from typing import Any, Iterator, Optional, cast
 
 import click
 import torch
 from datasets import Dataset
-from safetensors.torch import save_file
-from termcolor import colored
 
 # from torch.amp.grad_scaler import GradScaler
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torchtune.training import get_cosine_schedule_with_warmup
-from yaspin import yaspin
-from yaspin.core import Yaspin
 
 from nue.model.torch import MinimalGPT, init_weights
 from nue.train.trainer import BaseTrainer
 
 from .base import TrainingOptions
-from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
+from .tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID
 
 # NOTE: torch >= 2.6.0 かつ MPS Backend だと SDPA で NaN が出る
 #

@@ -14,22 +14,18 @@
 
 import math
 import os
-import time
-from typing import Any, Callable, Iterable, Iterator, Optional, cast
+from typing import Any, Callable, Iterator, Optional, cast
 
-import click
 import mlx.core as mx
 import mlx.data
 import mlx.nn as nn
 from datasets import Dataset
 from mlx.optimizers import AdamW, Optimizer
-from termcolor import colored
-from yaspin import yaspin
 
 from nue.mlx.model import NueLM
 from nue.model.base import GPTConfig
 from nue.train.base import TrainingOptions
-from nue.train.tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID, TOKENIZER
+from nue.train.tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID
 from nue.train.trainer import BaseTrainer
 
 
@@ -140,19 +136,23 @@ class MlxTrainer(BaseTrainer):
         return iter(self.validation_stream)
 
     def synchronize_device(self) -> None:
+        assert self.model is not None
         mx.synchronize()
+        mx.eval(self.model.parameters())
+
+    @property
+    def learning_rate(self) -> float:
+        assert self.optimizer is not None
+        return float(self.optimizer.learning_rate)
 
     def _train(
         self,
-        start_epoch: int,
-        start_step: int,
         *,
         log_validation_max_tokens: int,
         measure_time: bool,
         override_base_lr: float | None,
     ) -> None:
-        options = self.options
-
+        assert self.model is not None
         assert self.train_dataset is not None
         assert self.validation_dataset is not None
         assert self.train_stream is not None
@@ -160,6 +160,8 @@ class MlxTrainer(BaseTrainer):
         assert self.optimizer is not None
 
         optimizer = self.optimizer
+
+        # TODO: 学習開始前に学習率を変更する（学習再開時に上書きしたい場合）
 
         def loss_fn(
             model: nn.Module,
@@ -172,208 +174,60 @@ class MlxTrainer(BaseTrainer):
 
         loss_and_grad_fn = nn.value_and_grad(self.model, loss_fn)
 
-        click.secho("[5/7] Training from scratch", fg="bright_green", bold=True)
         self.model.train()
 
-        with yaspin().cyan as spinner:
+        for iteration, batch in self.train_loop(
+            log_validation_max_tokens=log_validation_max_tokens,
+            measure_time=measure_time,
+        ):
+            with iteration.measure_io():
+                batch = collate(batch, config=self.config)
 
-            def set_spinner_text(
-                i_epoch: int,
-                i_step: int,
-                *,
-                lr: float,
-                loss: Optional[float] = None,
-            ):
-                p = (i_step + 1) / self.num_training_steps_per_epoch
-                spinner.text = (
-                    colored(
-                        f"Epoch {i_epoch + 1}/{options.n_epochs} Step {i_step + 1} ({p:.1%})",
-                        color="cyan",
-                    )
-                    + " ("
-                    + f"lr: {lr:.8f}"
-                    + (f", loss: {loss:.3f}" if loss is not None else "")
-                    + ")"
+                input_ids = batch["input_ids"]
+                attn_mask = batch["attention_mask"]
+                labels = batch["labels"]
+
+            with iteration.measure_forward():
+                loss, grads = loss_and_grad_fn(
+                    self.model, input_ids, labels, attention_mask=attn_mask
                 )
 
-            epoch_loss = 0.0
-            total_loss = 0.0
+            with iteration.measure_backward():
+                # Update the model with the gradients. So far no computation has happened.
+                optimizer.update(self.model, grads)
+                # Compute the new parameters but also the optimizer state.
+                mx.eval(self.model.parameters(), optimizer.state)
 
-            t0 = 0.0
-            t1 = 0.0
-            t2 = 0.0
-            t3 = 0.0
-            t4 = 0.0
+            iteration.loss = float(loss)
 
-            io_elapsed = 0.0
-            forward_elapsed = 0.0
-            backward_elapsed = 0.0
-            optimizer_elapsed = 0.0
-            step_elapsed = 0.0
+            iteration.set_spinner_text()
 
-            i_step = 0
-
-            for i_epoch in range(0, options.n_epochs):
-                loader_iter = iter(self.train_stream)
-
-                while True:
-                    if measure_time:
-                        mx.synchronize()
-                        t0 = time.perf_counter()
-
-                    batch = next(loader_iter)
-
-                    batch = collate(batch, config=self.config)
-
-                    input_ids = batch["input_ids"]
-                    attn_mask = batch["attention_mask"]
-                    labels = batch["labels"]
-
-                    if measure_time:
-                        mx.synchronize()
-                        t1 = time.perf_counter()
-
-                    loss, grads = loss_and_grad_fn(
-                        self.model, input_ids, labels, attention_mask=attn_mask
-                    )
-
-                    if measure_time:
-                        mx.synchronize()
-                        mx.eval(loss, grads)
-                        t2 = time.perf_counter()
-
-                    # Update the model with the gradients. So far no computation has happened.
-                    optimizer.update(self.model, grads)
-
-                    if measure_time:
-                        mx.synchronize()
-                        mx.eval(self.model.parameters())
-                        t3 = time.perf_counter()
-
-                    # Compute the new parameters but also the optimizer state.
-                    mx.eval(self.model.parameters(), optimizer.state)
-
-                    if measure_time:
-                        mx.synchronize()
-                        t4 = time.perf_counter()
-
-                    set_spinner_text(
-                        i_epoch=i_epoch,
-                        i_step=i_step,
-                        lr=float(optimizer.learning_rate or 0.0),
-                        loss=float(loss),
-                    )
-
-                    total_loss += loss.item()
-                    epoch_loss += loss.item()
-
-                    io_elapsed += t1 - t0
-                    forward_elapsed += t2 - t1
-                    backward_elapsed += t3 - t2
-                    optimizer_elapsed += t4 - t3
-                    step_elapsed += t4 - t0
-
-                    # Log training progress
-                    if (i_step + 1) % options.log_interval == 0:
-                        try:
-                            self.model.eval()
-
-                            # Evaluate on validation dataset
-                            val_loss = self.evaluate(
-                                self.validation_stream,
-                                max_tokens=log_validation_max_tokens,
-                            )
-
-                            # Generate samples
-
-                            for text in self.generate_samples():
-                                spinner.write(
-                                    colored(
-                                        f"  SAMPLE: {text}",
-                                        "yellow",
-                                    )
-                                )
-                        finally:
-                            self.model.train()
-
-                        # 平均 loss を計算
-                        avg_loss = total_loss / options.log_interval
-                        # perplexity
-                        ppl = math.exp(avg_loss)
-                        # validation perplexity
-                        val_ppl = math.exp(val_loss)
-
-                        progress = (
-                            f"  Step {i_step + 1} "
-                            + f"{colored('loss=', 'cyan')}{avg_loss:.3f} "
-                            + f"{colored('ppl=', 'cyan')}{ppl:.3f} "
-                            + f"{colored('val_loss=', 'cyan')}{val_loss:.3f} "
-                            + f"{colored('val_ppl=', 'cyan')}{val_ppl:.3f} "
-                        )
-
-                        current_lr = float(optimizer.learning_rate or 0.0)
-                        progress += f"{colored('lr=', 'cyan')}{current_lr:.6f} "
-
-                        if measure_time:
-                            progress += "("
-                            progress += f"{step_elapsed / options.log_interval:.3f}s "
-                            progress += f"{colored('io=', 'cyan')}{io_elapsed / options.log_interval:.3f}s "
-                            progress += f"{colored('forward=', 'cyan')}{forward_elapsed / options.log_interval:.3f}s "
-                            progress += f"{colored('backward=', 'cyan')}{backward_elapsed / options.log_interval:.3f}s "
-                            progress += f"{colored('optimizer=', 'cyan')}{optimizer_elapsed / options.log_interval:.3f}s"
-                            progress += ")"
-
-                        spinner.write(progress)
-
-                        total_loss = 0.0
-                        io_elapsed = 0.0
-                        forward_elapsed = 0.0
-                        backward_elapsed = 0.0
-                        optimizer_elapsed = 0.0
-                        step_elapsed = 0.0
-
-                    i_step += 1
-
-    def _generate(self, idx: mx.array, max_new_tokens: int = 32):
+    def generate(self, ids: list[int], max_new_tokens: int = 32) -> list[int]:
         """Greedy text generation (for demo)."""
+        assert self.model is not None
+
+        idx = mx.array([ids])
+
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.config.ctx_len :]
             logits = self.model(idx_cond)[:, -1, :]  # [B,vocab]
             next_tok = logits.argmax(axis=-1, keepdims=True)
             idx = mx.concat([idx, next_tok], axis=1)
 
-        return idx
-
-    def _generate_text(
-        self,
-        prompt: str,
-        *,
-        max_new_length: int,
-    ) -> str:
-        assert self.model is not None
-
-        ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
-        idx = mx.array([ids], dtype=mx.int64)
-        out = self._generate(idx, max_new_tokens=max_new_length)[0].tolist()
-
-        return TOKENIZER.DecodeIds(out)
-
-    def generate_samples(self) -> Iterable[str]:
-        for prompt in ["富士山は", "Alan Turing is "]:
-            yield self._generate_text(prompt, max_new_length=50)
+        return cast(list[int], idx[0].tolist())
 
     def evaluate(
         self,
-        data_loader: Any,  # mlx.data.Stream
         *,
         max_tokens: Optional[int] = None,
     ) -> float:
         assert self.model is not None
+        assert self.validation_stream is not None
 
         total_loss = 0.0
         total_tokens = 0
 
-        for batch in data_loader:
+        for batch in self.validation_stream:
             batch = collate(batch, config=self.config)
 
             input_ids = batch["input_ids"]
