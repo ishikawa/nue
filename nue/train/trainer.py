@@ -261,12 +261,11 @@ class BaseTrainer(ABC):
                             measure_time=measure_time,
                         )
 
-                        # it.set_spinner_text()
+                        with it.measure_step():
+                            with it.measure_io():
+                                batch = next(loader_iter)
 
-                        with it.measure_io():
-                            batch = next(loader_iter)
-
-                        yield it, batch
+                            yield it, batch
 
                         # Complete step
                         assert it.loss is not None
@@ -486,7 +485,7 @@ class BaseTrainer(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def generate(self, ids: list[int], max_new_tokens: int = 32) -> list[int]:
+    def generate(self, ids: list[int], *, max_new_tokens: int = 32) -> list[int]:
         raise NotImplementedError
 
     @abstractmethod

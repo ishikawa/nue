@@ -14,6 +14,7 @@
 
 import math
 import os
+import random
 from typing import Any, Callable, Iterator, Optional, cast
 
 import mlx.core as mx
@@ -202,16 +203,53 @@ class MlxTrainer(BaseTrainer):
 
             iteration.set_spinner_text()
 
-    def generate(self, ids: list[int], max_new_tokens: int = 32) -> list[int]:
-        """Greedy text generation (for demo)."""
-        assert self.model is not None
+    def generate(
+        self,
+        ids: list[int],
+        *,
+        max_new_tokens: int = 32,
+        top_k: Optional[int] = 20,
+        temperature: float = 0.8,
+    ) -> list[int]:
+        """
+        Text generation with optional top-k sampling + temperature.
 
-        idx = mx.array([ids])
+        Args:
+            ids: 初期トークンID列
+            max_new_tokens: 生成する最大トークン数
+            top_k: None（デフォルト）なら貪欲法、int指定ならTop-kサンプリング
+            temperature: >0.0、温度スケーリングの係数
+        """
+        assert self.model is not None
+        idx = mx.array([ids])  # [1, seq_len]
 
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.config.ctx_len :]
-            logits = self.model(idx_cond)[:, -1, :]  # [B,vocab]
-            next_tok = logits.argmax(axis=-1, keepdims=True)
+            logits = self.model(idx_cond)[:, -1, :]  # [1, vocab_size]
+
+            if top_k is None:
+                next_tok = logits.argmax(axis=-1, keepdims=True)
+            else:
+                # 温度スケーリング + softmax
+                scaled = logits / temperature
+                probs = mx.softmax(scaled, axis=-1)  # [1, V]
+
+                # いったんリスト化
+                prob_list: list[float] = cast(
+                    list[float], probs[0].tolist()
+                )  # length V
+
+                # 上位 top_k の (index, prob) を取得
+                topk: list[tuple[int, float]] = sorted(
+                    enumerate(prob_list), key=lambda x: x[1], reverse=True
+                )[:top_k]
+
+                indices, weights = zip(*topk)  # tuple of ints, tuple of floats
+
+                # 重み付きランダムサンプリング
+                chosen = random.choices(indices, weights=weights, k=1)[0]
+                next_tok = mx.array([[chosen]])
+
             idx = mx.concat([idx, next_tok], axis=1)
 
         return cast(list[int], idx[0].tolist())
