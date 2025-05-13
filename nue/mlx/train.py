@@ -131,6 +131,17 @@ class MlxTrainer(BaseTrainer):
     def save_checkpoint(self, *, epoch: int, step: int) -> None:
         pass
 
+    def batch_train_iter(self) -> Iterator[dict[str, Any]]:
+        assert self.train_stream is not None
+        return iter(self.train_stream)
+
+    def batch_validation_iter(self) -> Iterator[dict[str, Any]]:
+        assert self.validation_stream is not None
+        return iter(self.validation_stream)
+
+    def synchronize_device(self) -> None:
+        mx.synchronize()
+
     def _train(
         self,
         start_epoch: int,

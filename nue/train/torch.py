@@ -17,7 +17,7 @@ import os
 import platform
 import time
 from contextlib import contextmanager
-from typing import Any, Iterable, Optional, cast
+from typing import Any, Iterable, Iterator, Optional, cast
 
 import click
 import torch
@@ -238,19 +238,31 @@ class PyTorchTrainer(BaseTrainer):
             self.checkpoint_path,
         )
 
+    def batch_train_iter(self) -> Iterator[dict[str, Any]]:
+        return iter(self.train_loader)
+
+    def batch_validation_iter(self) -> Iterator[dict[str, Any]]:
+        return iter(self.validation_loader)
+
+    def synchronize_device(self) -> None:
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        elif self.device.type == "mps":
+            torch.mps.synchronize()
+
+    @property
+    def learning_rate(self) -> float:
+        assert self.scheduler is not None
+        return self.scheduler.get_last_lr()[0]
+
     def _train(
         self,
-        start_epoch: int,
-        start_step: int,
         *,
         log_validation_max_tokens: int,
         measure_time: bool,
         override_base_lr: float | None,
     ) -> None:
-        options = self.options
-        model = self.model
-
-        assert model is not None
+        assert self.model is not None
         assert self.train_dataset is not None
         assert self.validation_dataset is not None
         assert self.train_loader is not None
@@ -259,6 +271,7 @@ class PyTorchTrainer(BaseTrainer):
         assert self.scheduler is not None
         assert self.criterion is not None
 
+        model = self.model
         optimizer = self.optimizer
         scheduler = self.scheduler
         criterion = self.criterion
@@ -277,348 +290,123 @@ class PyTorchTrainer(BaseTrainer):
                 fg="cyan",
             )
 
-        click.secho("[6/7] Start training loop", fg="green", bold=True)
         model.train()
-
-        loss = None
-        logits_mean = None
 
         # MPS では AMP (自動混合精度) を使用しない
         use_amp = self.device.type != "mps"
 
         # bfloat16 は十分な精度を持つので、GradScaler 不要
         # grad_scaler = GradScaler(self.device.type, enabled=use_amp)
-        with yaspin().cyan as spinner:
 
-            def set_spinner_text(
-                i_epoch: int,
-                i_step: int,
-                *,
-                lr: float,
-                loss: Optional[float] = None,
-                logits_mean: Optional[float] = None,
+        for iteration, batch in self.train_loop(
+            log_validation_max_tokens=log_validation_max_tokens,
+            measure_time=measure_time,
+        ):
+            # Runs the forward pass under `autocast`.
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=torch.bfloat16,
+                enabled=use_amp,
             ):
-                p = (i_step + 1) / self.num_training_steps_per_epoch
-                spinner.text = (
-                    colored(
-                        f"Epoch {i_epoch + 1}/{options.n_epochs} Step {i_step + 1} ({p:.1%})",
-                        color="cyan",
-                    )
-                    + " ("
-                    + f"lr: {lr:.8f}"
-                    + (f", loss: {loss:.3f}" if loss is not None else "")
-                    + (
-                        f", logits mean: {logits_mean:.3f}"
-                        if logits_mean is not None
-                        else ""
-                    )
-                    + ")"
-                )
-
-            for i_epoch in range(start_epoch, options.n_epochs):
-                epoch_loss = 0.0
-                total_loss = 0.0
-
-                t0 = 0.0
-                t1 = 0.0
-                t2 = 0.0
-                t3 = 0.0
-                t4 = 0.0
-
-                io_elapsed = 0.0
-                forward_elapsed = 0.0
-                backward_elapsed = 0.0
-                optimizer_elapsed = 0.0
-                step_elapsed = 0.0
-
-                i_step = 0
-                loader_iter = iter(self.train_loader)
-
-                while True:
-                    try:
-                        # 学習再開時には、開始前のデータをスキップする
-                        if i_epoch == start_epoch and i_step < start_step:
-                            next(loader_iter)
-                            continue
-
-                        set_spinner_text(
-                            i_epoch=i_epoch,
-                            i_step=i_step,
-                            lr=scheduler.get_last_lr()[0],
-                            loss=loss,
-                            logits_mean=logits_mean,
-                        )
-
-                        if measure_time:
-                            torch.mps.synchronize()
-                            t0 = time.perf_counter()
-
-                        batch = next(loader_iter)
-
-                        # Runs the forward pass under `autocast`.
-                        with torch.autocast(
-                            device_type=self.device.type,
-                            dtype=torch.bfloat16,
-                            enabled=use_amp,
-                        ):
-                            if measure_time:
-                                torch.mps.synchronize()
-                                t1 = time.perf_counter()
-
-                            input_ids = batch["input_ids"].to(self.device)
-                            attention_mask = batch["attention_mask"].to(self.device)
-                            labels = batch["labels"].to(self.device)
-
-                            logits = model(
-                                input_ids,
-                                attention_mask=attention_mask,
-                            )
-
-                            if measure_time:
-                                torch.mps.synchronize()
-                                t2 = time.perf_counter()
-
-                            loss = criterion(
-                                logits.view(-1, self.config.vocab_size),
-                                labels.view(-1),
-                            )
-
-                        # Exits `autocast` before backward().
-                        logits_mean = logits.abs().mean().item()
-
-                        set_spinner_text(
-                            i_epoch=i_epoch,
-                            i_step=i_step,
-                            lr=scheduler.get_last_lr()[0],
-                            loss=loss.item(),
-                            logits_mean=logits_mean,
-                        )
-
-                        # 勾配の計算
-                        # grad_scaler.scale(loss).backward()
-                        loss.backward()
-
-                        if measure_time:
-                            torch.mps.synchronize()
-                            t3 = time.perf_counter()
-
-                        # 勾配のクリッピング
-                        # ただし、小規模モデルは毎 step でなくても安定する
-                        if i_step % 4 == 0:
-                            # Un-scales the gradients of optimizer's assigned parameters in-place
-                            # grad_scaler.unscale_(optimizer)
-                            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-                        # パラメータの更新
-                        # grad_scaler.step(optimizer)
-                        # grad_scaler.update()
-                        optimizer.step()
-                        scheduler.step()
-
-                        # 勾配の初期化
-                        optimizer.zero_grad()
-
-                        if measure_time:
-                            torch.mps.synchronize()
-                            t4 = time.perf_counter()
-
-                        total_loss += loss.item()
-                        epoch_loss += loss.item()
-
-                        io_elapsed += t1 - t0
-                        forward_elapsed += t2 - t1
-                        backward_elapsed += t3 - t2
-                        optimizer_elapsed += t4 - t3
-                        step_elapsed += t4 - t0
-
-                        # Log training progress
-                        if (i_step + 1) % options.log_interval == 0:
-                            try:
-                                model.eval()
-
-                                # Evaluate on validation dataset
-                                val_loss = self.evaluate(
-                                    self.validation_loader,
-                                    criterion,
-                                    max_tokens=log_validation_max_tokens,
-                                )
-
-                                # Generate samples
-                                with torch.no_grad():
-                                    for text in self.generate_samples():
-                                        spinner.write(
-                                            colored(
-                                                f"  SAMPLE: {text}",
-                                                "yellow",
-                                            )
-                                        )
-                            finally:
-                                model.train()
-
-                            # 平均 loss を計算
-                            avg_loss = total_loss / options.log_interval
-                            # perplexity
-                            ppl = math.exp(avg_loss)
-                            # validation perplexity
-                            val_ppl = math.exp(val_loss)
-
-                            progress = (
-                                f"  Step {i_step + 1} "
-                                + f"{colored('loss=', 'cyan')}{avg_loss:.3f} "
-                                + f"{colored('ppl=', 'cyan')}{ppl:.3f} "
-                                + f"{colored('val_loss=', 'cyan')}{val_loss:.3f} "
-                                + f"{colored('val_ppl=', 'cyan')}{val_ppl:.3f} "
-                            )
-
-                            lr = scheduler.get_last_lr()[0]
-                            progress += f"{colored('lr=', 'cyan')}{lr:.6f} "
-
-                            if measure_time:
-                                progress += "("
-                                progress += (
-                                    f"{step_elapsed / options.log_interval:.3f}s "
-                                )
-                                progress += f"{colored('io=', 'cyan')}{io_elapsed / options.log_interval:.3f}s "
-                                progress += f"{colored('forward=', 'cyan')}{forward_elapsed / options.log_interval:.3f}s "
-                                progress += f"{colored('backward=', 'cyan')}{backward_elapsed / options.log_interval:.3f}s "
-                                progress += f"{colored('optimizer=', 'cyan')}{optimizer_elapsed / options.log_interval:.3f}s"
-                                progress += ")"
-
-                            spinner.write(progress)
-
-                            total_loss = 0.0
-                            io_elapsed = 0.0
-                            forward_elapsed = 0.0
-                            backward_elapsed = 0.0
-                            optimizer_elapsed = 0.0
-                            step_elapsed = 0.0
-
-                        # Save model checkpoint
-                        if (i_step + 1) % options.save_interval == 0:
-                            # Epoch is not finished yet, so -1
-                            self.save_checkpoint(epoch=i_epoch - 1, step=i_step)
-
-                    except StopIteration:
-                        break
-                    finally:
-                        i_step += 1
-
-                # エポック終わりのサンプル生成と評価
-                try:
-                    model.eval()
-
-                    # 評価
-                    val_loss = self.evaluate(self.validation_loader, criterion)
-
-                    # サンプル生成
-                    with torch.no_grad():
-                        for text in self.generate_samples():
-                            spinner.write(
-                                colored(
-                                    f"  Sample generation: {text}",
-                                    "yellow",
-                                )
-                            )
-                finally:
-                    model.train()
-
-                avg_epoch_loss = epoch_loss / len(self.train_dataset)
-
-                spinner.write(
-                    colored(
-                        f"Epoch {i_epoch + 1}/{options.n_epochs} finished",
-                        "magenta",
-                        attrs=["bold"],
-                    )
-                    + colored(
-                        f" (avg loss={avg_epoch_loss:.4f}, val loss={val_loss:.4f})",
-                        "magenta",
-                    )
-                )
-
-                # Save epoch checkpoint
-                click.secho(
-                    f"Saving epoch checkpoint at {self.checkpoint_path}",
-                    fg="magenta",
-                    bold=True,
-                )
-                self.save_checkpoint(epoch=i_epoch, step=0)
-
-        # --------- モデル保存 ---------
-        click.secho(
-            f"[7/7] Saving model to {self.checkpoint_path}...",
-            fg="bright_green",
-            bold=True,
-        )
-
-        self.save_checkpoint(epoch=options.n_epochs, step=0)
-
-    def _generate_text(
-        self,
-        prompt: str,
-        *,
-        max_new_length: int,
-    ) -> str:
-        assert self.model is not None
-
-        ids: list[int] = TOKENIZER.EncodeAsIds(prompt)
-        idx = torch.tensor([ids], dtype=torch.long).to(self.device)
-        out = self._generate(idx, max_new_tokens=max_new_length)[0].cpu().tolist()
-
-        return TOKENIZER.DecodeIds(out)
-
-    @torch.no_grad()
-    def _generate(self, idx: torch.Tensor, max_new_tokens: int = 32):
-        """Greedy text generation (for demo)."""
-        assert self.model is not None
-        for _ in range(max_new_tokens):
-            idx_cond = idx[:, -self.config.ctx_len :]
-            logits = self.model(idx_cond)[:, -1, :]  # [B,vocab]
-            next_tok = logits.argmax(dim=-1, keepdim=True)
-            idx = torch.cat([idx, next_tok], dim=1)
-        return idx
-
-    def generate_samples(self) -> Iterable[str]:
-        with torch.no_grad():
-            with self.use_cpu_on_mps():
-                for prompt in ["富士山は", "Alan Turing is "]:
-                    yield self._generate_text(prompt, max_new_length=50)
-
-    def evaluate(
-        self,
-        dataloader: DataLoader,
-        criterion: torch.nn.Module,
-        *,
-        max_tokens: Optional[int] = None,
-    ) -> float:
-        assert self.model is not None
-
-        total_loss = 0.0
-        total_tokens = 0
-
-        with torch.no_grad():
-            with self.use_cpu_on_mps():
-                for batch in dataloader:
+                with iteration.measure_forward():
                     input_ids = batch["input_ids"].to(self.device)
                     attention_mask = batch["attention_mask"].to(self.device)
                     labels = batch["labels"].to(self.device)
 
-                    logits = self.model(
+                    logits = model(
                         input_ids,
                         attention_mask=attention_mask,
                     )
 
-                    loss = criterion(
-                        logits.view(-1, self.config.vocab_size),
-                        labels.view(-1),
-                    )
+                loss = criterion(
+                    logits.view(-1, self.config.vocab_size),
+                    labels.view(-1),
+                )
+                iteration.loss = float(loss.item())
 
-                    num_tokens = (labels != IGNORE_TOKEN_ID).sum().item()
-                    total_loss += loss.item() * num_tokens
-                    total_tokens += num_tokens
+            # Exits `autocast` before backward().
+            logits_mean = logits.abs().mean().item()
 
-                    if max_tokens is not None and total_tokens >= max_tokens:
-                        break
+            iteration.set_spinner_text(
+                logits_mean=logits_mean,
+            )
+
+            with iteration.measure_backward():
+                # 勾配の計算
+                # grad_scaler.scale(loss).backward()
+                loss.backward()
+
+            # 勾配のクリッピング
+            # ただし、小規模モデルは毎 step でなくても安定する
+            if iteration.i_step % 4 == 0:
+                # Un-scales the gradients of optimizer's assigned parameters in-place
+                # grad_scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            with iteration.measure_optimizer():
+                # パラメータの更新
+                # grad_scaler.step(optimizer)
+                # grad_scaler.update()
+                optimizer.step()
+                scheduler.step()
+
+                # 勾配の初期化
+                optimizer.zero_grad()
+
+    @torch.no_grad()
+    def generate(self, ids: list[int], max_new_tokens: int = 32) -> list[int]:
+        assert self.model is not None
+
+        with self.use_cpu_on_mps():
+            idx = torch.tensor([ids], dtype=torch.long).to(self.device)
+
+            for _ in range(max_new_tokens):
+                idx_cond = idx[:, -self.config.ctx_len :]
+                logits = self.model(idx_cond)[:, -1, :]  # [B,vocab]
+                next_tok = logits.argmax(dim=-1, keepdim=True)
+                idx = torch.cat([idx, next_tok], dim=1)
+
+        return idx[0].cpu().tolist()
+
+    def evaluate(
+        self,
+        *,
+        max_tokens: Optional[int] = None,
+    ) -> float:
+        assert self.model is not None
+        assert self.validation_loader is not None
+        assert self.criterion is not None
+
+        total_loss = 0.0
+        total_tokens = 0
+
+        self.model.eval()
+        try:
+            with torch.no_grad():
+                with self.use_cpu_on_mps():
+                    for batch in self.validation_loader:
+                        input_ids = batch["input_ids"].to(self.device)
+                        attention_mask = batch["attention_mask"].to(self.device)
+                        labels = batch["labels"].to(self.device)
+
+                        logits = self.model(
+                            input_ids,
+                            attention_mask=attention_mask,
+                        )
+
+                        loss = self.criterion(
+                            logits.view(-1, self.config.vocab_size),
+                            labels.view(-1),
+                        )
+
+                        num_tokens = (labels != IGNORE_TOKEN_ID).sum().item()
+                        total_loss += loss.item() * num_tokens
+                        total_tokens += num_tokens
+
+                        if max_tokens is not None and total_tokens >= max_tokens:
+                            break
+        finally:
+            self.model.train()
 
         avg_loss = total_loss / total_tokens
         return avg_loss
