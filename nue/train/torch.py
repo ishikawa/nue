@@ -15,6 +15,7 @@
 import math
 import os
 import platform
+import random
 from contextlib import contextmanager
 from functools import partial
 from typing import Any, Iterator, Optional, cast
@@ -350,7 +351,14 @@ class PyTorchTrainer(BaseTrainer):
                 optimizer.zero_grad()
 
     @torch.no_grad()
-    def generate(self, ids: list[int], *, max_new_tokens: int = 32) -> list[int]:
+    def generate(
+        self,
+        ids: list[int],
+        *,
+        max_new_tokens: int = 32,
+        top_k: Optional[int] = 20,
+        temperature: float = 0.8,
+    ) -> list[int]:
         assert self.model is not None
 
         with self.use_cpu_on_mps():
@@ -358,8 +366,33 @@ class PyTorchTrainer(BaseTrainer):
 
             for _ in range(max_new_tokens):
                 idx_cond = idx[:, -self.config.ctx_len :]
-                logits = self.model(idx_cond)[:, -1, :]  # [B,vocab]
-                next_tok = logits.argmax(dim=-1, keepdim=True)
+                logits = self.model(idx_cond)[:, -1, :]  # [B, vocab]
+
+                if top_k is None:
+                    # Greedy
+                    next_tok = logits.argmax(dim=-1, keepdim=True)
+                else:
+                    # 1) 温度スケーリング
+                    scaled = logits / temperature
+
+                    # 2) Softmax で確率に変換
+                    probs = torch.softmax(scaled, dim=-1)  # [1, vocab]
+
+                    # 3) 上位 top_k を選択
+                    topk_probs, topk_indices = torch.topk(
+                        probs, top_k, dim=-1
+                    )  # [1, k]
+
+                    # 4) Python で重み付きサンプリング
+                    probs_list = topk_probs[0].tolist()
+                    indices_list = topk_indices[0].tolist()
+                    sampled = random.choices(indices_list, weights=probs_list, k=1)[0]
+
+                    next_tok = torch.tensor(
+                        [[sampled]], dtype=torch.long, device=self.device
+                    )
+
+                # 5) 連結
                 idx = torch.cat([idx, next_tok], dim=1)
 
         return idx[0].cpu().tolist()
