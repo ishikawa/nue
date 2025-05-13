@@ -486,7 +486,7 @@ class BaseTrainer(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def generate(self, ids: list[int], max_new_tokens: int = 32) -> list[int]:
+    def generate(self, ids: list[int], *, max_new_tokens: int = 32) -> list[int]:
         raise NotImplementedError
 
     @abstractmethod

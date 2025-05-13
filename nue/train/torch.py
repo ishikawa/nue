@@ -350,7 +350,7 @@ class PyTorchTrainer(BaseTrainer):
                 optimizer.zero_grad()
 
     @torch.no_grad()
-    def generate(self, ids: list[int], max_new_tokens: int = 32) -> list[int]:
+    def generate(self, ids: list[int], *, max_new_tokens: int = 32) -> list[int]:
         assert self.model is not None
 
         with self.use_cpu_on_mps():
