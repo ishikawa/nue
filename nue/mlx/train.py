@@ -344,7 +344,11 @@ def cross_entropy_mean(
     # 各トークンごとの loss 値
     # shape: (B*T,)
     per_token_loss = nn.losses.cross_entropy(
-        logits, safe_labels, label_smoothing=label_smoothing, reduction="none"
+        # NOTE: 損失計算は数値安定性の観点から `float32` で行う
+        logits.astype(mx.float32),
+        safe_labels,
+        label_smoothing=label_smoothing,
+        reduction="none",
     )
 
     # mask で無視する部分を考慮しつつ平均を取る

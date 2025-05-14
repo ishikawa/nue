@@ -124,7 +124,7 @@ class TransformerBlock(nn.Module):
 
 
 class TransformerBlocks(nn.Module):
-    def __init__(self, *modules: nn.Module):
+    def __init__(self, *modules: TransformerBlock):
         super().__init__()
         self.layers = list(modules)
 
@@ -150,6 +150,9 @@ class NueLM(nn.Module):
 
         # weight tying
         self.head.weight = self.tok_emb.weight
+
+        # fp16
+        self.set_dtype(mx.bfloat16)
 
         # 重みを初期化
         self.apply_to_modules(init_by_layer)
@@ -188,14 +191,25 @@ def trunc_normal_like(arr: mx.array, std=0.02, mean=0.0, trunc_scale=2.0) -> mx.
     return (sample * std + mean).astype(arr.dtype)
 
 
-# 出力層重みを ±0.04 に制限することで、活性化後のスケールが 線形に 0.02 σ へ収束 -> 過大な logits を抑制
-# バイアスを 0、LayerNorm γ=1/β=0 とすることで 分散が早期に安定 → Cross-Entropy が発散しにくい
+# 出力層重みを ±0.04 に制限することで、活性化後のスケールが 線形に 0.02 σ へ収束 -> 過大な logits を
+# 抑制バイアスを 0、LayerNorm γ=1/β=0 とすることで 分散が早期に安定 → Cross-Entropy が発散しにくい
 def init_by_layer(name: str, mod: nn.Module):
     if isinstance(mod, nn.Embedding):
         mod.apply(trunc_normal_like)
     elif isinstance(mod, nn.Linear):
         mod.apply(trunc_normal_like, filter_fn=lambda _, n, a: n == "weight")
-        mod.apply(nn.init.constant(0.0), filter_fn=lambda _, n, __: n == "bias")
+        mod.apply(
+            nn.init.constant(0.0, dtype=mx.bfloat16),
+            filter_fn=lambda _, n, __: n == "bias",
+        )
     elif isinstance(mod, nn.LayerNorm):
-        mod.apply(nn.init.constant(1.0), filter_fn=lambda _, n, __: n == "weight")
-        mod.apply(nn.init.constant(0.0), filter_fn=lambda _, n, __: n == "bias")
+        # NOTE: 学習の安定化のためには、LayerNorm の weight/bias および Linear の bias は
+        # float32 の方が望ましいが、ここではメモリ削減を優先して bfloat16 にする
+        mod.apply(
+            nn.init.constant(1.0, dtype=mx.bfloat16),
+            filter_fn=lambda _, n, __: n == "weight",
+        )
+        mod.apply(
+            nn.init.constant(0.0, dtype=mx.bfloat16),
+            filter_fn=lambda _, n, __: n == "bias",
+        )

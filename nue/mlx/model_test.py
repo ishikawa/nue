@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import mlx.core as mx
+
 from nue.mlx.model import NueLM
 from nue.model.base import GPTConfig
 
@@ -25,6 +27,12 @@ def test_simple():
         mlp_ratio=2,
     )
     m = NueLM(config)
-    assert m
-    # print(m.parameters())
+
     assert len(m.blocks.layers) == config.n_layers
+
+    assert m.ln_f.weight.dtype == mx.float32
+    assert m.ln_f.bias.dtype == mx.float32
+
+    assert m.head.weight.dtype == mx.bfloat16
+
+    assert m.blocks.layers[0].attn.causal.dtype == mx.bfloat16
