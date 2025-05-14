@@ -9,4 +9,3 @@ class GPTConfig:
     n_heads: int  # number of attention heads
     n_layers: int  # transformer blocks
     mlp_ratio: int  # feed‑forward expansion ratio
-    dropout: float = 0.0
