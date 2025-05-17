@@ -16,6 +16,7 @@ import json
 import math
 import os
 import random
+from functools import partial
 from typing import Any, Callable, Iterator, Optional, cast
 
 import mlx.core as mx
@@ -152,9 +153,7 @@ class MlxTrainer(BaseTrainer):
         return iter(self.validation_stream)
 
     def synchronize_device(self) -> None:
-        assert self.model is not None
         mx.synchronize()
-        mx.eval(self.model.parameters())
 
     @property
     def learning_rate(self) -> float:
@@ -188,7 +187,24 @@ class MlxTrainer(BaseTrainer):
             logits = model(input_ids, attention_mask=attention_mask)
             return cross_entropy_mean(logits, labels)
 
-        loss_and_grad_fn = nn.value_and_grad(self.model, loss_fn)
+        # The state that will be captured as input and output
+        captured_state = [self.model.state, optimizer.state]
+
+        @partial(mx.compile, inputs=captured_state, outputs=captured_state)
+        def model_step(
+            input_ids: mx.array,
+            labels: mx.array,
+            attention_mask: mx.array | None = None,
+        ) -> mx.array:
+            loss_and_grad_fn = nn.value_and_grad(self.model, loss_fn)
+            loss, grads = loss_and_grad_fn(
+                self.model, input_ids, labels, attention_mask=attention_mask
+            )
+
+            # Update the model with the gradients. So far no computation has happened.
+            optimizer.update(self.model, grads)
+
+            return loss
 
         self.model.train()
 
@@ -199,20 +215,18 @@ class MlxTrainer(BaseTrainer):
             with iteration.measure_io():
                 batch = collate(batch, config=self.config)
 
-                input_ids = batch["input_ids"]
-                attn_mask = batch["attention_mask"]
-                labels = batch["labels"]
+            input_ids = batch["input_ids"]
+            attn_mask = batch["attention_mask"]
+            labels = batch["labels"]
 
-            with iteration.measure_forward():
-                loss, grads = loss_and_grad_fn(
-                    self.model, input_ids, labels, attention_mask=attn_mask
-                )
+            loss = model_step(
+                input_ids,
+                labels,
+                attention_mask=attn_mask,
+            )
 
-            with iteration.measure_backward():
-                # Update the model with the gradients. So far no computation has happened.
-                optimizer.update(self.model, grads)
-                # Compute the new parameters but also the optimizer state.
-                mx.eval(self.model.parameters(), optimizer.state)
+            # Compute the new parameters but also the optimizer state.
+            mx.eval(self.model.parameters(), optimizer.state)
 
             iteration.loss = float(loss)
 
@@ -330,7 +344,11 @@ def cross_entropy_mean(
     # 各トークンごとの loss 値
     # shape: (B*T,)
     per_token_loss = nn.losses.cross_entropy(
-        logits, safe_labels, label_smoothing=label_smoothing, reduction="none"
+        # NOTE: 損失計算は数値安定性の観点から `float32` で行う
+        logits.astype(mx.float32),
+        safe_labels,
+        label_smoothing=label_smoothing,
+        reduction="none",
     )
 
     # mask で無視する部分を考慮しつつ平均を取る
@@ -361,20 +379,26 @@ def get_cosine_schedule_with_warmup(
 
     """
 
-    def schedule(current_step: mx.array) -> mx.array:
-        # linear warmup phase
-        if current_step < num_warmup_steps:
-            return current_step / max(1, num_warmup_steps) * base_lr
+    # --- pre-compute constant scalars (Python side, not traced) -------------
+    warmup_steps_f = float(max(1, num_warmup_steps))
+    decay_steps_f = float(max(1, num_training_steps - num_warmup_steps))
+    two_pi_cycles = math.pi * 2.0 * num_cycles
+    base_lr_arr = mx.array(base_lr, dtype=mx.float32)  # tensor scalar
 
-        # cosine
-        progress = (current_step - num_warmup_steps) / max(
-            1, num_training_steps - num_warmup_steps
-        )
+    # ------------------------------------------------------------------------
+    def schedule(step: mx.array) -> mx.array:
+        step_f = step.astype(mx.float32)  # ensure fp tensor
 
-        cosine_lr_multiple = 0.5 * (
-            1.0 + math.cos(math.pi * num_cycles * 2.0 * progress)
-        )
-        return mx.maximum(mx.array(0.0), cosine_lr_multiple) * base_lr
+        # linear warm-up (tensor)
+        warmup_lr = (step_f / warmup_steps_f) * base_lr_arr
+
+        # cosine decay (tensor)
+        progress = (step_f - warmup_steps_f) / decay_steps_f
+        cosine_mul = 0.5 * (1.0 + mx.cos(progress * two_pi_cycles))
+        cosine_lr = mx.maximum(0.0, cosine_mul) * base_lr_arr
+
+        # piece-wise select without Python if
+        return mx.where(step_f < warmup_steps_f, warmup_lr, cosine_lr)
 
     return schedule
 

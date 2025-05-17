@@ -18,12 +18,23 @@ test:
 train-local:
 	uv run python -m nue.cli train \
 		--batch-size 4 \
-		--lr 3e-4 \
 		--max-warmup-steps 20 \
 		--log-interval 10 \
 		--save-interval 10 \
 		--override-data-size 3% \
-		--log-validation-max-tokens 2048
+		--log-validation-max-tokens 2048 \
+		--measure-time
+
+train-local-mlx:
+	uv run python -m nue.cli train \
+		--framework mlx \
+		--batch-size 4 \
+		--max-warmup-steps 20 \
+		--log-interval 10 \
+		--save-interval 10 \
+		--override-data-size 3% \
+		--log-validation-max-tokens 2048 \
+		--measure-time
 
 train:
 	uv run python -m nue.cli train --batch-size 256

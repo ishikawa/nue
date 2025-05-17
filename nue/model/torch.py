@@ -65,7 +65,6 @@ class SelfAttention(nn.Module):
         self.head_dim = cfg.n_embed // cfg.n_heads
         self.qkv = nn.Linear(cfg.n_embed, cfg.n_embed * 3, bias=False)
         self.proj = nn.Linear(cfg.n_embed, cfg.n_embed, bias=False)
-        self.dropout = cfg.dropout
 
         # RoPE precomputed
         self.rotary = RotaryEmbedding(self.head_dim, max_pos=cfg.ctx_len)
@@ -122,7 +121,6 @@ class SelfAttention(nn.Module):
             k,
             v,
             attn_mask=attn_mask,
-            dropout_p=self.dropout if self.training else 0.0,
             is_causal=False,
         )
 
