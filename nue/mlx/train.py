@@ -21,7 +21,6 @@ from functools import partial
 from typing import Any, Callable, Iterator, Optional, cast
 
 import click
-
 import mlx.core as mx
 import mlx.data
 import mlx.nn as nn
@@ -253,43 +252,32 @@ class MlxTrainer(BaseTrainer):
         ids: list[int],
         *,
         max_new_tokens: int = 32,
-        top_k: Optional[int] = 20,
+        top_k: int | None = 20,
         temperature: float = 0.8,
+        eos_id: int | None = None,
     ) -> list[int]:
-        """
-        Text generation with optional top-k sampling + temperature.
-
-        Args:
-            ids: 初期トークンID列
-            max_new_tokens: 生成する最大トークン数
-            top_k: None（デフォルト）なら貪欲法、int指定ならTop-kサンプリング
-            temperature: >0.0、温度スケーリングの係数
-        """
-        assert self.model is not None
         idx = mx.array([ids])  # [1, seq_len]
 
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.config.ctx_len :]
-            logits = self.model(idx_cond)[:, -1, :]  # [1, vocab_size]
+            logits = self.model(idx_cond)[:, -1, :]  # [1, V]
 
-            if top_k is None:
+            if top_k is None or temperature <= 0.0:
                 next_tok = logits.argmax(axis=-1, keepdims=True)
             else:
-                # 温度スケーリング + softmax
-                scaled = logits / temperature
-                probs = mx.softmax(scaled, axis=-1)  # [1, V]
+                # 大きい順に上位 k 個の logit を取得
+                k = min(top_k, logits.shape[-1])
+                topk_idx = mx.argpartition(logits, -k, axis=-1)[..., -k:]
+                topk_logits = mx.take_along_axis(logits, topk_idx, axis=-1)
 
-                # 上位 top_k の確率とインデックスを取得
-                topk_values = mx.topk(probs, k=top_k, axis=-1)
-                topk_indices = mx.argpartition(probs, -top_k, axis=-1)[..., -top_k:]
-
-                # 重み付きランダムサンプリング
-                sample_idx = mx.random.categorical(topk_values, axis=-1)
-                next_tok = mx.take_along_axis(
-                    topk_indices, sample_idx[..., None], axis=-1
-                )
+                # 温度スケーリングした logits をそのまま categorical へ
+                sample_idx = mx.random.categorical(topk_logits / temperature, axis=-1)
+                next_tok = mx.take_along_axis(topk_idx, sample_idx[..., None], axis=-1)
 
             idx = mx.concat([idx, next_tok], axis=1)
+
+            if eos_id is not None and int(next_tok[0]) == eos_id:
+                break
 
         return cast(list[int], idx[0].tolist())
 
