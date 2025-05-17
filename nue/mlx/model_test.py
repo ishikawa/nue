@@ -30,8 +30,8 @@ def test_simple():
 
     assert len(m.blocks.layers) == config.n_layers
 
-    assert m.ln_f.weight.dtype == mx.float32
-    assert m.ln_f.bias.dtype == mx.float32
+    assert m.ln_f.weight.dtype == mx.bfloat16
+    assert m.ln_f.bias.dtype == mx.bfloat16
 
     assert m.head.weight.dtype == mx.bfloat16
 
