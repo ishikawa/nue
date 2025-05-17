@@ -15,7 +15,6 @@
 """Utility helpers for formatting and other small tasks."""
 
 
-
 def format_number_abbrev(n: int) -> str:
     """
     Convert a number to a string with an abbreviation (K, M, B).

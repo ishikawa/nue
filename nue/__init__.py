@@ -1,2 +1,1 @@
-
 """Nue library root package."""

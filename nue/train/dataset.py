@@ -187,5 +187,3 @@ def load_train_dataset(
     final_dataset = final_dataset.remove_columns("num_tokens")
 
     return final_dataset, total_tokens
-
-
