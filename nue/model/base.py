@@ -1,3 +1,5 @@
+"""Base dataclasses for model configuration."""
+
 from dataclasses import dataclass
 
 

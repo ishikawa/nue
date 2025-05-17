@@ -1,3 +1,5 @@
+"""Abstract trainer and helpers for managing training loops."""
+
 import dataclasses
 import json
 import math

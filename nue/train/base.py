@@ -1,3 +1,5 @@
+"""Base dataclasses used by the training pipeline."""
+
 from dataclasses import dataclass
 from typing import Optional
 
