@@ -155,7 +155,7 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     "override_data_size",
     type=str,
     default=None,
-    help="Override data size for training. (e.g. 10%')",
+    help="Override data size for training. (e.g. 10%)",
 )
 # Options below are for debugging and not saved in training session
 @click.option(
