@@ -15,17 +15,11 @@
 import os
 import re
 from dataclasses import dataclass
-from typing import Optional, cast
+from typing import Any, List, Optional, Protocol, Union, cast
 
-from datasets import (
-    Dataset,
-    Features,
-    Sequence,
-    Value,
-    concatenate_datasets,
-    load_dataset,
-)
-from sentencepiece import SentencePieceProcessor
+import numpy as np
+from datasets import Dataset, Features, Value, concatenate_datasets, load_dataset
+from datasets import Sequence as DatasetSequence
 
 from nue.common import DATASET_CACHE_DIR
 from nue.datasets import DATASET_LIST
@@ -33,8 +27,20 @@ from nue.datasets import DATASET_LIST
 from .tokenizer import TOKENIZER
 
 
+class TokenizerProtocol(Protocol):
+    def EncodeAsIds(self, input: str, **kwargs) -> List[int]: ...
+
+    def EncodeAsPieces(self, input: str, **kwargs) -> List[str]: ...
+
+    def DecodeIds(
+        self, input: Union[List[int], np.ndarray], out_type: type = str, **kwargs: Any
+    ) -> str: ...
+
+    def GetPieceSize(self) -> int: ...
+
+
 def _tokenize_and_chunk(
-    text: str, tokenizer: SentencePieceProcessor, ctx_len: int, overlap_len: int
+    text: str, tokenizer: TokenizerProtocol, ctx_len: int, overlap_len: int
 ) -> list[list[int]]:
     """テキストをトークナイズし、オーバーラップ付きのチャンクに分割する"""
     tokens = tokenizer.EncodeAsIds(text)
@@ -141,7 +147,7 @@ def load_train_dataset(
         # フラット化後のデータセットのスキーマ (特徴量) を定義
         new_features = Features(
             {
-                "input_ids": Sequence(feature=Value(dtype="int32")),
+                "input_ids": DatasetSequence(Value(dtype="int32")),
                 "num_tokens": Value(dtype="int32"),
             }
         )

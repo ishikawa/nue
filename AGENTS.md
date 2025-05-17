@@ -1,0 +1,3 @@
+- type check: `uv run pyright ./nue/*.py ./nue/model ./nue/train`
+- lint: `uv run ruff check ./nue/*.py ./nue/model ./nue/train`
+- test: `uv run pytest ./nue/*.py ./nue/model ./nue/train`

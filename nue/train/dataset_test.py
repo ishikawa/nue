@@ -1,11 +1,27 @@
-import pytest
+from __future__ import annotations
 
+import numpy as np
+import pytest
+from typing import Any, List, Union
 from nue.train.dataset import _tokenize_and_chunk
 
 
 class DummyTokenizer:
-    def EncodeAsIds(self, text: str) -> list[int]:
-        return list(range(1, len(text) + 1))
+    """テスト用のシンプルなトークナイザー"""
+    def EncodeAsIds(self, input: str, **kwargs: Any) -> List[int]:
+        return list(range(1, len(input) + 1))
+    
+    def EncodeAsPieces(self, input: str, **kwargs: Any) -> List[str]:
+        return list(input)
+    
+    def DecodeIds(self, input: Union[List[int], np.ndarray], out_type: type = str, **kwargs: Any) -> str:
+        if isinstance(input, np.ndarray):
+            input = input.tolist()
+        decoded = ''.join(chr(i + 96) for i in input)
+        return out_type(decoded)
+    
+    def GetPieceSize(self) -> int:
+        return 10000
 
 
 def test_short_text_returns_single_chunk():
