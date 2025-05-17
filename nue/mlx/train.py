@@ -289,6 +289,17 @@ class MLXTrainer(BaseTrainer):
         assert self.model is not None
         assert self.validation_stream is not None
 
+        captured_state = [self.model.state]
+
+        @partial(mx.compile, inputs=captured_state, outputs=captured_state)
+        def eval_step(
+            input_ids: mx.array,
+            labels: mx.array,
+            attention_mask: mx.array | None = None,
+        ) -> mx.array:
+            logits = self.model(input_ids, attention_mask=attention_mask)
+            return cross_entropy_mean(logits, labels)
+
         total_loss = 0.0
         total_tokens = 0
 
@@ -299,15 +310,13 @@ class MLXTrainer(BaseTrainer):
             attn_mask = batch["attention_mask"]
             labels = batch["labels"]
 
-            logits = self.model(
+            loss = eval_step(
                 input_ids,
+                labels,
                 attention_mask=attn_mask,
             )
 
-            loss = cross_entropy_mean(
-                logits,
-                labels,
-            )
+            mx.eval(loss)
 
             num_tokens = cast(mx.array, (labels != IGNORE_TOKEN_ID)).sum()
             total_loss += loss * num_tokens
