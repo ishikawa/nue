@@ -17,7 +17,6 @@
 import json
 import math
 import os
-import random
 from functools import partial
 from typing import Any, Callable, Iterator, Optional, cast
 
@@ -280,21 +279,14 @@ class MlxTrainer(BaseTrainer):
                 scaled = logits / temperature
                 probs = mx.softmax(scaled, axis=-1)  # [1, V]
 
-                # いったんリスト化
-                prob_list: list[float] = cast(
-                    list[float], probs[0].tolist()
-                )  # length V
-
-                # 上位 top_k の (index, prob) を取得
-                topk: list[tuple[int, float]] = sorted(
-                    enumerate(prob_list), key=lambda x: x[1], reverse=True
-                )[:top_k]
-
-                indices, weights = zip(*topk)  # tuple of ints, tuple of floats
+                # 上位 top_k の確率とインデックスを取得
+                topk_probs, topk_indices = mx.topk(probs, k=top_k, axis=-1)
 
                 # 重み付きランダムサンプリング
-                chosen = random.choices(indices, weights=weights, k=1)[0]
-                next_tok = mx.array([[chosen]])
+                sample_idx = mx.random.categorical(topk_probs, axis=-1)
+                next_tok = mx.take_along_axis(
+                    topk_indices, sample_idx[..., None], axis=-1
+                )
 
             idx = mx.concat([idx, next_tok], axis=1)
 
