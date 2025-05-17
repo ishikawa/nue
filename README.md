@@ -41,7 +41,7 @@ $ poetry run nue build-corpus
 
 (2) Tokenizer を学習
 
-以下のコマンドを実行すると、 `build/sp8k_unigram.model` と `build/sp8k_unigram.vocab` が生成されます。
+以下のコマンドを実行すると、 `build/tokenizer.model` と `build/tokenizer.vocab` が生成されます。
 
 ```
 $ poetry run nue train-tokenizer
