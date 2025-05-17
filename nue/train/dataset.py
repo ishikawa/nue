@@ -14,7 +14,6 @@
 
 import os
 import re
-from dataclasses import dataclass
 from typing import Any, List, Optional, Protocol, Union, cast
 
 import numpy as np
@@ -188,8 +187,3 @@ def load_train_dataset(
     return final_dataset, total_tokens
 
 
-@dataclass(frozen=True)
-class TrainAndValidationDatasetResult:
-    total_tokens: int
-    train_dataset: Dataset
-    validation_dataset: Dataset
