@@ -33,7 +33,7 @@ from nue.datasets import DATASET_LIST
 from .tokenizer import TOKENIZER
 
 
-def __tokenize_and_chunk(
+def _tokenize_and_chunk(
     text: str, tokenizer: SentencePieceProcessor, ctx_len: int, overlap_len: int
 ) -> list[list[int]]:
     """テキストをトークナイズし、オーバーラップ付きのチャンクに分割する"""
@@ -74,7 +74,7 @@ def __tokenize_and_chunk(
 
 
 # --- 第1段階の map で使用する関数 ---
-def __map_tokenize_to_chunk_lists(
+def _map_tokenize_to_chunk_lists(
     examples: dict[str, list], column: str, ctx_len: int, overlap_len: int
 ) -> dict[str, list]:
     """
@@ -84,7 +84,7 @@ def __map_tokenize_to_chunk_lists(
     output = {"input_ids_chunks": [], "num_tokens_chunks": []}
     # TOKENIZER はグローバル変数から参照
     for text in examples[column]:
-        chunks = __tokenize_and_chunk(text, TOKENIZER, ctx_len, overlap_len)
+        chunks = _tokenize_and_chunk(text, TOKENIZER, ctx_len, overlap_len)
         output["input_ids_chunks"].append(chunks)
         output["num_tokens_chunks"].append([len(c) for c in chunks])
     return output
@@ -117,7 +117,7 @@ def load_train_dataset(
 
         # Tokenize
         mapped_dataset = dataset.map(
-            __map_tokenize_to_chunk_lists,
+            _map_tokenize_to_chunk_lists,
             fn_kwargs={
                 "column": dataset_config.content_column,
                 "ctx_len": ctx_len,
