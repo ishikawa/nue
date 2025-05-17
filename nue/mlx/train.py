@@ -280,10 +280,11 @@ class MlxTrainer(BaseTrainer):
                 probs = mx.softmax(scaled, axis=-1)  # [1, V]
 
                 # 上位 top_k の確率とインデックスを取得
-                topk_probs, topk_indices = mx.topk(probs, k=top_k, axis=-1)
+                topk_values = mx.topk(probs, k=top_k, axis=-1)
+                topk_indices = mx.argpartition(probs, -top_k, axis=-1)[..., -top_k:]
 
                 # 重み付きランダムサンプリング
-                sample_idx = mx.random.categorical(topk_probs, axis=-1)
+                sample_idx = mx.random.categorical(topk_values, axis=-1)
                 next_tok = mx.take_along_axis(
                     topk_indices, sample_idx[..., None], axis=-1
                 )
