@@ -130,14 +130,6 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     type=click.Path(file_okay=False, dir_okay=True, exists=False),
     help="Output directory path for the trained model",
 )
-@click.option("--seed", "seed", default=4649, type=int, help="Random seed")
-@click.option(
-    "--output-path",
-    "output_path",
-    default=str(BUILD_DIR / "_train"),
-    type=click.Path(file_okay=False, dir_okay=True, exists=False),
-    help="Output directory path for the trained model",
-)
 @click.option(
     "--model-dir",
     "model_dir",
