@@ -289,33 +289,44 @@ class MLXTrainer(BaseTrainer):
         assert self.model is not None
         assert self.validation_stream is not None
 
-        total_loss = 0.0
-        total_tokens = 0
+        captured_state = [self.model.state]
+
+        @partial(mx.compile, inputs=captured_state, outputs=captured_state)
+        def eval_step(
+            input_ids: mx.array,
+            labels: mx.array,
+            attention_mask: mx.array | None = None,
+        ) -> mx.array:
+            logits = self.model(input_ids, attention_mask=attention_mask)
+            return cross_entropy_mean(logits, labels)
+
+        total_loss = mx.array(0.0, dtype=mx.float32)
+        total_tokens = mx.array(0, dtype=mx.int32)
+
+        remain = max_tokens if max_tokens is not None else None
 
         for batch in self.validation_stream:
-            batch = collate(batch, config=self.config)
+            batch = collate(batch, config=self.config)  # 必要なら
 
-            input_ids = batch["input_ids"]
-            attn_mask = batch["attention_mask"]
-            labels = batch["labels"]
-
-            logits = self.model(
-                input_ids,
-                attention_mask=attn_mask,
+            loss = eval_step(
+                batch["input_ids"],
+                batch["labels"],
+                attention_mask=batch["attention_mask"],
             )
 
-            loss = cross_entropy_mean(
-                logits,
-                labels,
-            )
+            # ─── 2. デバイス上で累積 ───
+            token_mask = cast(mx.array, batch["labels"] != IGNORE_TOKEN_ID)
+            n_tok_batch = token_mask.sum()
+            total_loss = total_loss + loss * n_tok_batch
+            total_tokens = total_tokens + n_tok_batch
 
-            num_tokens = cast(mx.array, (labels != IGNORE_TOKEN_ID)).sum()
-            total_loss += loss * num_tokens
-            total_tokens += num_tokens
+            if remain is not None:
+                remain -= int(n_tok_batch)
+                if remain <= 0:
+                    break
 
-            if max_tokens is not None and total_tokens >= max_tokens:
-                break
-
+        # ─── 3. 最後に 1 回だけホスト転送 ───
+        mx.eval(total_loss, total_tokens)
         avg_loss = total_loss / total_tokens
         return float(avg_loss)
 
