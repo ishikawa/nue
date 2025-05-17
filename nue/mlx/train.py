@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Training utilities built on top of mlx."""
+
 import json
 import math
 import os

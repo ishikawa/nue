@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""Paths and utilities shared across the package."""
+
 import pathlib
 
 BUILD_DIR = pathlib.Path(__file__).parent.parent / "build"

@@ -1,3 +1,5 @@
+"""Tests for the PyTorch GPT model."""
+
 import torch
 
 from .base import GPTConfig

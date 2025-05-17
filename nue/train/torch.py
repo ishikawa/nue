@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Training loop implementation using PyTorch."""
+
 import math
 import os
 import platform

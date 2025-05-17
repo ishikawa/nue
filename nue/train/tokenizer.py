@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Global tokenizer instance used across training workers."""
+
 from sentencepiece import SentencePieceProcessor
 
 from nue.common import BUILD_DIR

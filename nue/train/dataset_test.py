@@ -1,3 +1,5 @@
+"""Tests for dataset tokenization utilities."""
+
 from __future__ import annotations
 
 import numpy as np

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Helpers for tokenizing and chunking training datasets."""
+
 import os
 import re
 from typing import Any, List, Optional, Protocol, Union, cast

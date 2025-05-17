@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Utility helpers for formatting and other small tasks."""
+
+
 
 def format_number_abbrev(n: int) -> str:
     """
