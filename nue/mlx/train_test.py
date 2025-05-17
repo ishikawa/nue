@@ -1,11 +1,9 @@
 import pytest
-
-mx = pytest.importorskip("mlx.core")
-
 from datasets import Dataset
-
 from nue.mlx.train import MlxTrainer
 from nue.train.base import TrainingOptions
+
+mx = pytest.importorskip("mlx.core")
 
 
 class DummyTrainer(MlxTrainer):
@@ -56,4 +54,3 @@ def test_override_base_lr(tmp_path):
     )
 
     assert pytest.approx(trainer.learning_rate, rel=1e-6) == 0.2
-
