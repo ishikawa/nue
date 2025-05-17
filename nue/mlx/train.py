@@ -34,7 +34,7 @@ from nue.train.tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID
 from nue.train.trainer import BaseTrainer
 
 
-class MlxTrainer(BaseTrainer):
+class MLXTrainer(BaseTrainer):
     model: NueLM
 
     train_stream: Any | None = None

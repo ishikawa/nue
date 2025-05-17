@@ -279,9 +279,9 @@ def train_command(
             override_base_lr=override_base_lr,
         )
     elif training_options.framework == "mlx":
-        from nue.mlx.train import MlxTrainer
+        from nue.mlx.train import MLXTrainer
 
-        trainer = MlxTrainer(training_options)
+        trainer = MLXTrainer(training_options)
         trainer.train(
             measure_time=measure_time,
             log_validation_max_tokens=log_validation_max_tokens,
