@@ -21,6 +21,8 @@ import random
 from functools import partial
 from typing import Any, Callable, Iterator, Optional, cast
 
+import click
+
 import mlx.core as mx
 import mlx.data
 import mlx.nn as nn
@@ -169,6 +171,13 @@ class MlxTrainer(BaseTrainer):
         measure_time: bool,
         override_base_lr: float | None,
     ) -> None:
+        """Run the training loop.
+
+        If ``override_base_lr`` is provided, the optimizer's learning rate is
+        set to the given value before the loop starts. This mirrors the
+        ``PyTorchTrainer`` behaviour where the optimizer's current learning
+        rate is overwritten when resuming training.
+        """
         assert self.model is not None
         assert self.train_dataset is not None
         assert self.validation_dataset is not None
@@ -178,7 +187,13 @@ class MlxTrainer(BaseTrainer):
 
         optimizer = self.optimizer
 
-        # TODO: 学習開始前に学習率を変更する（学習再開時に上書きしたい場合）
+        # 学習開始前に学習率を変更する（学習再開時に上書きしたい場合）
+        if override_base_lr is not None:
+            optimizer.learning_rate = override_base_lr
+            click.secho(
+                f"Optimizer learning rate successfully set to: {override_base_lr}",
+                fg="cyan",
+            )
 
         def loss_fn(
             model: nn.Module,
