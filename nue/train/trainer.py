@@ -32,10 +32,6 @@ class TrainingIteration:
     i_step: int
     measure_time: bool
 
-    io_elapsed: float = 0.0
-    forward_elapsed: float = 0.0
-    backward_elapsed: float = 0.0
-    optimizer_elapsed: float = 0.0
     step_elapsed: float = 0.0
 
     loss: float | None = None
@@ -90,18 +86,6 @@ class TrainingIteration:
                 self._trainer.synchronize_device()
                 m = getattr(self, name)
                 setattr(self, name, m + time.perf_counter() - t)
-
-    def measure_io(self):
-        return self._measure("io_elapsed")
-
-    def measure_forward(self):
-        return self._measure("forward_elapsed")
-
-    def measure_backward(self):
-        return self._measure("backward_elapsed")
-
-    def measure_optimizer(self):
-        return self._measure("optimizer_elapsed")
 
     def measure_step(self):
         return self._measure("step_elapsed")
@@ -239,10 +223,6 @@ class BaseTrainer(ABC):
                 epoch_loss = 0.0
                 total_loss = 0.0
 
-                io_elapsed = 0.0
-                forward_elapsed = 0.0
-                backward_elapsed = 0.0
-                optimizer_elapsed = 0.0
                 step_elapsed = 0.0
 
                 i_step = 0
@@ -264,8 +244,7 @@ class BaseTrainer(ABC):
                         )
 
                         with it.measure_step():
-                            with it.measure_io():
-                                batch = next(loader_iter)
+                            batch = next(loader_iter)
 
                             yield it, batch
 
@@ -275,10 +254,6 @@ class BaseTrainer(ABC):
                         total_loss += it.loss
                         epoch_loss += it.loss
 
-                        io_elapsed += it.io_elapsed
-                        forward_elapsed += it.forward_elapsed
-                        backward_elapsed += it.backward_elapsed
-                        optimizer_elapsed += it.optimizer_elapsed
                         step_elapsed += it.step_elapsed
 
                         # Log training progress
@@ -317,23 +292,13 @@ class BaseTrainer(ABC):
                             )
 
                             if measure_time:
-                                progress += "("
                                 progress += (
-                                    f"{step_elapsed / self.options.log_interval:.3f}s "
+                                    f"({step_elapsed / self.options.log_interval:.3f}s)"
                                 )
-                                progress += f"{colored('io=', 'cyan')}{io_elapsed / self.options.log_interval:.3f}s "
-                                progress += f"{colored('forward=', 'cyan')}{forward_elapsed / self.options.log_interval:.3f}s "
-                                progress += f"{colored('backward=', 'cyan')}{backward_elapsed / self.options.log_interval:.3f}s "
-                                progress += f"{colored('optimizer=', 'cyan')}{optimizer_elapsed / self.options.log_interval:.3f}s"
-                                progress += ")"
 
                             spinner.write(progress)
 
                             total_loss = 0.0
-                            io_elapsed = 0.0
-                            forward_elapsed = 0.0
-                            backward_elapsed = 0.0
-                            optimizer_elapsed = 0.0
                             step_elapsed = 0.0
 
                         # Save model checkpoint
