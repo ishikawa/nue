@@ -403,7 +403,7 @@ def get_cosine_schedule_with_warmup(
 
 def collate(input_ids: mx.array) -> tuple[mx.array, mx.array, mx.array]:
     # 1) Build attention mask (boolean mask)
-    attn_mask = mx.array(input_ids != PAD_TOKEN_ID)
+    attn_mask = cast(mx.array, input_ids != PAD_TOKEN_ID)
 
     # 2) Create labels
     # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
