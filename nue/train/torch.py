@@ -307,15 +307,14 @@ class PyTorchTrainer(BaseTrainer):
                 dtype=torch.bfloat16,
                 enabled=use_amp,
             ):
-                with iteration.measure_forward():
-                    input_ids = batch["input_ids"].to(self.device)
-                    attention_mask = batch["attention_mask"].to(self.device)
-                    labels = batch["labels"].to(self.device)
+                input_ids = batch["input_ids"].to(self.device)
+                attention_mask = batch["attention_mask"].to(self.device)
+                labels = batch["labels"].to(self.device)
 
-                    logits = model(
-                        input_ids,
-                        attention_mask=attention_mask,
-                    )
+                logits = model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                )
 
                 loss = criterion(
                     logits.view(-1, self.config.vocab_size),
@@ -330,10 +329,9 @@ class PyTorchTrainer(BaseTrainer):
                 logits_mean=logits_mean,
             )
 
-            with iteration.measure_backward():
-                # 勾配の計算
-                # grad_scaler.scale(loss).backward()
-                loss.backward()
+            # 勾配の計算
+            # grad_scaler.scale(loss).backward()
+            loss.backward()
 
             # 勾配のクリッピング
             # ただし、小規模モデルは毎 step でなくても安定する
@@ -342,15 +340,14 @@ class PyTorchTrainer(BaseTrainer):
                 # grad_scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-            with iteration.measure_optimizer():
-                # パラメータの更新
-                # grad_scaler.step(optimizer)
-                # grad_scaler.update()
-                optimizer.step()
-                scheduler.step()
+            # パラメータの更新
+            # grad_scaler.step(optimizer)
+            # grad_scaler.update()
+            optimizer.step()
+            scheduler.step()
 
-                # 勾配の初期化
-                optimizer.zero_grad()
+            # 勾配の初期化
+            optimizer.zero_grad()
 
     @torch.no_grad()
     def generate(
