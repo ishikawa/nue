@@ -28,7 +28,6 @@ from datasets import Dataset
 from mlx.optimizers import AdamW, Optimizer
 
 from nue.mlx.model import NueLM
-from nue.model.base import GPTConfig
 from nue.train.base import TrainingOptions
 from nue.train.tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID
 from nue.train.trainer import BaseTrainer
@@ -283,7 +282,7 @@ class MLXTrainer(BaseTrainer):
 
         captured_state = [self.model.state]
 
-        @partial(mx.compile, inputs=captured_state, outputs=captured_state)
+        @partial(mx.compile, inputs=captured_state)
         def eval_step(
             input_ids: mx.array,
             attention_mask: mx.array,
