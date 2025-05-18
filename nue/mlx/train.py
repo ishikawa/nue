@@ -402,21 +402,23 @@ def get_cosine_schedule_with_warmup(
 
 
 def collate(input_ids: mx.array) -> tuple[mx.array, mx.array, mx.array]:
-    # 1) Build attention mask (boolean mask)
-    attn_mask = cast(mx.array, input_ids != PAD_TOKEN_ID)
+    # PAD マスク
+    pad_mask = cast(mx.array, input_ids == PAD_TOKEN_ID)  # bool
 
-    # 2) Create labels
-    # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
-    # - パディング部分は損失計算から除外する必要がある
+    # attention mask
+    attn_mask = ~pad_mask  # bool
 
-    # batch と同じ shape で全ての要素を IGNORE (損失計算で無視される値) で初期化
-    labels = mx.full(input_ids.shape, IGNORE_TOKEN_ID)
+    # labels 本体（1 トークン左シフト）
+    # pad_mask のスライスで行う
+    body = mx.where(
+        pad_mask[:, 1:],  # ← ここで再利用🎯
+        IGNORE_TOKEN_ID,
+        input_ids[:, 1:],
+    )
 
-    # input_ids を左シフトして labels に代入することで、
-    # labels[i] <- input_ids[i+1]
-    labels[:, :-1] = input_ids[:, 1:]
+    # 最後尾は常に IGNORE
+    tail = mx.full((input_ids.shape[0], 1), IGNORE_TOKEN_ID, dtype=input_ids.dtype)
 
-    # labels の要素で PAD_ID となっている箇所を IGNORE にする
-    labels = mx.where(labels == PAD_TOKEN_ID, IGNORE_TOKEN_ID, labels)
+    labels = mx.concat([body, tail], axis=1)
 
     return input_ids, attn_mask, labels
