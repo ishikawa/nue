@@ -27,6 +27,7 @@ import mlx.nn as nn
 import numpy as np
 from datasets import Dataset
 from mlx.optimizers import AdamW, Optimizer
+from mlx.utils import tree_flatten, tree_unflatten
 
 from nue.mlx.model import NueLM
 from nue.train.base import TrainingOptions
@@ -121,17 +122,26 @@ class MLXTrainer(BaseTrainer):
         self.optimizer = optimizer
 
     def on_train_resume(
-        self, checkpoint_path: str
+        self,
     ) -> tuple[
         int,  # epoch
         int,  # step
     ]:
+        assert self.model is not None
+        assert self.optimizer is not None
+
         # Load metadata
-        meta_path = checkpoint_path.replace(".safetensors", ".meta.json")
+        meta_path = os.path.join(self.options.model_dir, "checkpoint.meta.json")
         with open(meta_path, "r") as f:
             meta = json.load(f)
+
         # Load model weights
-        self.model.load_weights(checkpoint_path)
+        self.model.load_weights(self.checkpoint_path)
+
+        # Load optimizer state
+        optimizer_path = os.path.join(self.options.model_dir, "optimizer.safetensors")
+        optimizer_state = tree_unflatten(list(mx.load(optimizer_path).items()))
+        self.optimizer.state = optimizer_state
 
         return meta["epoch"], meta["step"]
 
@@ -141,11 +151,17 @@ class MLXTrainer(BaseTrainer):
 
     def save_checkpoint(self, *, epoch: int, step: int) -> None:
         assert self.model is not None
+        assert self.optimizer is not None
 
         self.model.save_weights(self.checkpoint_path)
 
+        # save the optimizer state
+        optimizer_path = os.path.join(self.options.model_dir, "optimizer.safetensors")
+        optimizer_state = tree_flatten(self.optimizer.state)
+        mx.save_safetensors(optimizer_path, dict(optimizer_state))
+
         # Also save json metadata for convenience
-        meta_path = self.checkpoint_path.replace(".safetensors", ".meta.json")
+        meta_path = os.path.join(self.options.model_dir, "checkpoint.meta.json")
         with open(meta_path, "w") as f:
             json.dump({"epoch": epoch, "step": step}, f)
 
