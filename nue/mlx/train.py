@@ -93,6 +93,7 @@ class MLXTrainer(BaseTrainer):
                     pad_value=PAD_TOKEN_ID,
                 )
                 .batch(self.options.batch_size)
+                .prefetch(8, os.cpu_count())
             )
 
         # Load dataset into mlx buffer
