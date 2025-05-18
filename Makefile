@@ -28,12 +28,12 @@ train-local:
 train-local-mlx:
 	uv run python -m nue.cli train \
 		--framework mlx \
-		--batch-size 4 \
+		--batch-size 8 \
 		--max-warmup-steps 20 \
 		--log-interval 10 \
 		--save-interval 10 \
 		--override-data-size 3% \
-		--log-validation-max-tokens 2048 \
+		--log-validation-max-tokens 4096 \
 		--measure-time
 
 train:
