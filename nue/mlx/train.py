@@ -24,6 +24,7 @@ import click
 import mlx.core as mx
 import mlx.data
 import mlx.nn as nn
+import numpy as np
 from datasets import Dataset
 from mlx.optimizers import AdamW, Optimizer
 
@@ -92,8 +93,9 @@ class MLXTrainer(BaseTrainer):
                     pad_value=PAD_TOKEN_ID,
                 )
                 .batch(self.options.batch_size)
-                # NOTE: prefetching didn't have any impact on processing time
-                # .prefetch(8, os.cpu_count())
+                # NumPy で collate - CPU スレッドで並列化される
+                .sample_transform(collate_np)
+                .prefetch(os.cpu_count() or 2, os.cpu_count() or 2)
             )
 
         # Load dataset into mlx buffer
@@ -211,9 +213,9 @@ class MLXTrainer(BaseTrainer):
         @partial(mx.compile, inputs=captured_state, outputs=captured_state)
         def model_step(
             input_ids: mx.array,
+            attention_mask: mx.array,
+            labels: mx.array,
         ) -> mx.array:
-            input_ids, attention_mask, labels = collate(input_ids)
-
             loss, grads = loss_and_grad_fn(
                 self.model, input_ids, labels, attention_mask=attention_mask
             )
@@ -230,8 +232,10 @@ class MLXTrainer(BaseTrainer):
             measure_time=measure_time,
         ):
             input_ids = mx.array(batch["input_ids"], dtype=mx.int32)
+            attention_mask = mx.array(batch["attention_mask"], dtype=mx.bool_)  # type: ignore
+            labels = mx.array(batch["labels"], dtype=mx.int32)
 
-            loss = model_step(input_ids)
+            loss = model_step(input_ids, attention_mask, labels)
 
             if iteration.i_step % 2 == 0:
                 # Compute the new parameters but also the optimizer state.
@@ -301,7 +305,8 @@ class MLXTrainer(BaseTrainer):
 
         for batch in self.validation_stream:
             input_ids = mx.array(batch["input_ids"], dtype=mx.int32)
-            input_ids, attention_mask, labels = collate(input_ids)
+            attention_mask = mx.array(batch["attention_mask"], dtype=mx.bool_)  # type: ignore
+            labels = mx.array(batch["labels"], dtype=mx.int32)
             loss = eval_step(input_ids, attention_mask, labels)
 
             # ─── 2. デバイス上で累積 ───
@@ -402,7 +407,8 @@ def get_cosine_schedule_with_warmup(
     return schedule
 
 
-def collate(input_ids: mx.array) -> tuple[mx.array, mx.array, mx.array]:
+# collate を MLX = GPU で実行する。
+def collate_mlx(input_ids: mx.array) -> tuple[mx.array, mx.array, mx.array]:
     # PAD mask
     pad_mask = cast(mx.array, input_ids == PAD_TOKEN_ID)
 
@@ -421,3 +427,22 @@ def collate(input_ids: mx.array) -> tuple[mx.array, mx.array, mx.array]:
     labels = mx.concat([body, tail], axis=1)
 
     return input_ids, attn_mask, labels
+
+
+# collate を NumPy で実行 = CPU で実行する。MLX Data の prefetch と組み合わせることで、
+# GPU でもモデル学習と、collate を実行する時間を並行させる狙い。
+def collate_np(sample: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    ids = sample["input_ids"]  # shape (B, T), int32
+    pad_mask = ids == PAD_TOKEN_ID
+    attn_mask = ~pad_mask  # bool
+
+    tail = np.full((ids.shape[0], 1), IGNORE_TOKEN_ID, ids.dtype)
+    shifted = np.concatenate([ids[:, 1:], tail], axis=1)
+    labels = np.where(shifted == PAD_TOKEN_ID, IGNORE_TOKEN_ID, shifted)
+
+    return {
+        "input_ids": ids,
+        # MLX data does not accept bool type
+        "attention_mask": attn_mask.astype(np.uint8),
+        "labels": labels,
+    }
