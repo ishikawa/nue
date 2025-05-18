@@ -233,8 +233,9 @@ class MLXTrainer(BaseTrainer):
 
             loss = model_step(input_ids)
 
-            # Compute the new parameters but also the optimizer state.
-            mx.eval(self.model.parameters(), optimizer.state)
+            if iteration.i_step % 2 == 0:
+                # Compute the new parameters but also the optimizer state.
+                mx.eval(self.model.parameters(), optimizer.state)
 
             iteration.loss = float(loss)
 
