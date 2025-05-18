@@ -229,7 +229,7 @@ class MLXTrainer(BaseTrainer):
             log_validation_max_tokens=log_validation_max_tokens,
             measure_time=measure_time,
         ):
-            input_ids = mx.array(batch["input_ids"])
+            input_ids = mx.array(batch["input_ids"], dtype=mx.int32)
 
             loss = model_step(input_ids)
 
@@ -299,7 +299,7 @@ class MLXTrainer(BaseTrainer):
         remain = max_tokens if max_tokens is not None else None
 
         for batch in self.validation_stream:
-            input_ids = mx.array(batch["input_ids"])
+            input_ids = mx.array(batch["input_ids"], dtype=mx.int32)
             input_ids, attention_mask, labels = collate(input_ids)
             loss = eval_step(input_ids, attention_mask, labels)
 
