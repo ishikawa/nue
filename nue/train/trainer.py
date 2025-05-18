@@ -181,9 +181,7 @@ class BaseTrainer(ABC):
                 fg="green",
                 bold=True,
             )
-            self.start_epoch, self.start_step = self.on_train_resume(
-                checkpoint_path=self.checkpoint_path
-            )
+            self.start_epoch, self.start_step = self.on_train_resume()
         else:
             click.secho("[5/7] Training from scratch", fg="bright_green", bold=True)
             os.makedirs(self.options.model_dir, exist_ok=True)
@@ -387,7 +385,7 @@ class BaseTrainer(ABC):
 
     @abstractmethod
     def on_train_resume(
-        self, checkpoint_path: str
+        self,
     ) -> tuple[
         int,  # epoch
         int,  # step

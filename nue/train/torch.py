@@ -192,7 +192,7 @@ class PyTorchTrainer(BaseTrainer):
         )
 
     def on_train_resume(
-        self, checkpoint_path: str
+        self,
     ) -> tuple[
         int,  # epoch
         int,  # step
@@ -201,7 +201,7 @@ class PyTorchTrainer(BaseTrainer):
         assert self.optimizer is not None
         assert self.scheduler is not None
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
 
         self.model.load_state_dict(checkpoint["model_state"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state"])
