@@ -184,11 +184,11 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
     help="Override base learning rate.",
 )
 @click.option(
-    "--framework",
-    "framework",
+    "--backend",
+    "backend",
     type=click.Choice(["torch", "mlx"], case_sensitive=False),
     default="torch",
-    help="Framework to use.",
+    help="Backend to use.",
 )
 def train_command(
     n_epochs: int,
@@ -210,7 +210,7 @@ def train_command(
     override_data_size: str | None = None,
     log_validation_max_tokens: int = 50_000,
     override_base_lr: float | None = None,
-    framework: str = "torch",
+    backend: str = "torch",
 ):
     from nue.train import TrainingOptions
 
@@ -246,7 +246,7 @@ def train_command(
             save_interval=save_interval,
             override_data_size=override_data_size,
             max_warmup_steps=max_warmup_steps,
-            framework=framework,
+            backend=backend,
         )
 
         training_session = TrainingSession(
@@ -260,7 +260,7 @@ def train_command(
             )
 
     click.secho(
-        f"Using {training_options.framework} trainer: "
+        f"Using {training_options.backend} trainer: "
         + f"n_epochs={training_options.n_epochs}, batch_size={training_options.batch_size}, ctx_length={training_options.ctx_len}, "
         + f"n_embed={training_options.n_embed}, n_heads={training_options.n_heads}, "
         + f"n_layers={training_options.n_layers}, mlp_ratio={training_options.mlp_ratio}, "
@@ -269,7 +269,7 @@ def train_command(
         fg="white",
     )
 
-    if training_options.framework == "torch":
+    if training_options.backend == "torch":
         from nue.train.torch import PyTorchTrainer
 
         trainer = PyTorchTrainer(training_options)
@@ -278,7 +278,7 @@ def train_command(
             log_validation_max_tokens=log_validation_max_tokens,
             override_base_lr=override_base_lr,
         )
-    elif training_options.framework == "mlx":
+    elif training_options.backend == "mlx":
         from nue.mlx.train import MLXTrainer
 
         trainer = MLXTrainer(training_options)

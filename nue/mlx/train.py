@@ -28,7 +28,6 @@ from datasets import Dataset
 from mlx.optimizers import AdamW, Optimizer
 
 from nue.mlx.model import NueLM
-from nue.model.base import GPTConfig
 from nue.train.base import TrainingOptions
 from nue.train.tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID
 from nue.train.trainer import BaseTrainer
@@ -204,16 +203,17 @@ class MLXTrainer(BaseTrainer):
             logits = model(input_ids, attention_mask=attention_mask)
             return cross_entropy_mean(logits, labels)
 
+        loss_and_grad_fn = nn.value_and_grad(self.model, loss_fn)
+
         # The state that will be captured as input and output
         captured_state = [self.model.state, optimizer.state]
 
         @partial(mx.compile, inputs=captured_state, outputs=captured_state)
         def model_step(
             input_ids: mx.array,
-            labels: mx.array,
-            attention_mask: mx.array | None = None,
         ) -> mx.array:
-            loss_and_grad_fn = nn.value_and_grad(self.model, loss_fn)
+            input_ids, attention_mask, labels = collate(input_ids)
+
             loss, grads = loss_and_grad_fn(
                 self.model, input_ids, labels, attention_mask=attention_mask
             )
@@ -229,18 +229,9 @@ class MLXTrainer(BaseTrainer):
             log_validation_max_tokens=log_validation_max_tokens,
             measure_time=measure_time,
         ):
-            with iteration.measure_io():
-                batch = collate(batch, config=self.config)
+            input_ids = mx.array(batch["input_ids"], dtype=mx.int32)
 
-            input_ids = batch["input_ids"]
-            attn_mask = batch["attention_mask"]
-            labels = batch["labels"]
-
-            loss = model_step(
-                input_ids,
-                labels,
-                attention_mask=attn_mask,
-            )
+            loss = model_step(input_ids)
 
             # Compute the new parameters but also the optimizer state.
             mx.eval(self.model.parameters(), optimizer.state)
@@ -293,11 +284,11 @@ class MLXTrainer(BaseTrainer):
 
         captured_state = [self.model.state]
 
-        @partial(mx.compile, inputs=captured_state, outputs=captured_state)
+        @partial(mx.compile, inputs=captured_state)
         def eval_step(
             input_ids: mx.array,
+            attention_mask: mx.array,
             labels: mx.array,
-            attention_mask: mx.array | None = None,
         ) -> mx.array:
             logits = self.model(input_ids, attention_mask=attention_mask)
             return cross_entropy_mean(logits, labels)
@@ -308,16 +299,12 @@ class MLXTrainer(BaseTrainer):
         remain = max_tokens if max_tokens is not None else None
 
         for batch in self.validation_stream:
-            batch = collate(batch, config=self.config)  # 必要なら
-
-            loss = eval_step(
-                batch["input_ids"],
-                batch["labels"],
-                attention_mask=batch["attention_mask"],
-            )
+            input_ids = mx.array(batch["input_ids"], dtype=mx.int32)
+            input_ids, attention_mask, labels = collate(input_ids)
+            loss = eval_step(input_ids, attention_mask, labels)
 
             # ─── 2. デバイス上で累積 ───
-            token_mask = cast(mx.array, batch["labels"] != IGNORE_TOKEN_ID)
+            token_mask = cast(mx.array, labels != IGNORE_TOKEN_ID)
             n_tok_batch = token_mask.sum()
             total_loss = total_loss + loss * n_tok_batch
             total_tokens = total_tokens + n_tok_batch
@@ -414,28 +401,22 @@ def get_cosine_schedule_with_warmup(
     return schedule
 
 
-def collate(batch: dict[str, Any], *, config: GPTConfig) -> dict[str, mx.array]:
-    input_ids = mx.array(batch["input_ids"])
+def collate(input_ids: mx.array) -> tuple[mx.array, mx.array, mx.array]:
+    # PAD mask
+    pad_mask = cast(mx.array, input_ids == PAD_TOKEN_ID)
 
-    # 2) Build attention mask (boolean mask)
-    attn_mask = mx.array(input_ids != PAD_TOKEN_ID)
+    # attention mask
+    attn_mask = ~pad_mask
 
-    # 3) Create labels
-    # - 次トークン予測タスクでは、labels[i] が input_ids[i+1] に対応
-    # - パディング部分は損失計算から除外する必要がある
+    # labels body (shift left by 1 token)
+    # reusing pad_mask[:, 1:]
+    body = mx.where(
+        pad_mask[:, 1:],
+        IGNORE_TOKEN_ID,
+        input_ids[:, 1:],
+    )
 
-    # batch と同じ shape で全ての要素を IGNORE (損失計算で無視される値) で初期化
-    labels = mx.full(input_ids.shape, IGNORE_TOKEN_ID)
+    tail = mx.full((input_ids.shape[0], 1), IGNORE_TOKEN_ID, dtype=input_ids.dtype)
+    labels = mx.concat([body, tail], axis=1)
 
-    # input_ids を左シフトして labels に代入することで、
-    # labels[i] <- input_ids[i+1]
-    labels[:, :-1] = input_ids[:, 1:]
-
-    # labels の要素で PAD_ID となっている箇所を IGNORE にする
-    labels = mx.where(labels == PAD_TOKEN_ID, IGNORE_TOKEN_ID, labels)
-
-    return {
-        "input_ids": input_ids,
-        "attention_mask": attn_mask,
-        "labels": labels,
-    }
+    return input_ids, attn_mask, labels

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pytest
 from datasets import Dataset
 
 from nue.mlx.model import NueLM
-from nue.mlx.train import MLXTrainer
+from nue.mlx.train import MLXTrainer, collate
 from nue.train.base import TrainingOptions
+from nue.train.tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID
 
 mx = pytest.importorskip("mlx.core")
 
@@ -39,7 +41,7 @@ def _make_options(tmp_path: str) -> TrainingOptions:
         log_interval=1,
         save_interval=1,
         model_dir=tmp_path,
-        framework="mlx",
+        backend="mlx",
     )
 
 
@@ -113,3 +115,48 @@ def test_generate_greedy(tmp_path):
     trainer.model = DummyModel(trainer.config.vocab_size)
     out = trainer.generate([0], max_new_tokens=1, top_k=None)
     assert out == [0, 1]
+
+
+@pytest.mark.parametrize(
+    "input_np",
+    [
+        # --- ① パディング無し ---
+        np.array([[10, 11, 12, 13]], dtype=np.int32),
+        # --- ② 末尾 PAD を含む ---
+        np.array([[20, 21, PAD_TOKEN_ID, PAD_TOKEN_ID]], dtype=np.int32),
+        # --- ③ バッチサイズ >1 かつ長さ混在（pad_to_size 後想定） ---
+        np.array(
+            [
+                [1, 2, 3, PAD_TOKEN_ID, PAD_TOKEN_ID],
+                [40, 41, 42, 43, 44],
+            ],
+            dtype=np.int32,
+        ),
+    ],
+)
+def test_collate_correctness(input_np):
+    """collate() が (inputs, mask, labels) を正しく返すか"""
+    # NumPy → MX
+    input_mx = mx.array(input_np, dtype=mx.int32)
+
+    out_ids, attn_mask, labels = collate(input_mx)
+
+    # 1) input_ids はそのまま返る
+    assert np.array_equal(np.asarray(out_ids), input_np)
+
+    # 2) attention_mask は PAD 位置だけ False
+    expected_mask = input_np != PAD_TOKEN_ID
+    assert np.array_equal(np.asarray(attn_mask), expected_mask)
+
+    # 3) labels は 1 トークン左シフト & PAD→IGNORE
+    shifted = np.full_like(input_np, IGNORE_TOKEN_ID)
+    shifted[:, :-1] = input_np[:, 1:]
+    shifted = np.where(shifted == PAD_TOKEN_ID, IGNORE_TOKEN_ID, shifted)
+    assert np.array_equal(np.asarray(labels), shifted)
+
+
+def test_label_ignore_for_all_pad():
+    """全トークン PAD の行でもラベルはすべて IGNORE"""
+    input_np = np.full((2, 4), PAD_TOKEN_ID, dtype=np.int32)
+    _, _, labels = collate(mx.array(input_np))
+    assert np.all(np.asarray(labels) == IGNORE_TOKEN_ID)
