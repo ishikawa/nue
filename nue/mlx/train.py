@@ -93,8 +93,9 @@ class MLXTrainer(BaseTrainer):
                     pad_value=PAD_TOKEN_ID,
                 )
                 .batch(self.options.batch_size)
-                # NOTE: prefetching didn't have any impact on processing time
-                # .prefetch(8, os.cpu_count())
+                # NumPy で collate - CPU スレッドで並列化される
+                .sample_transform(collate_np)
+                .prefetch(4, os.cpu_count())
             )
 
         # Load dataset into mlx buffer
@@ -212,9 +213,9 @@ class MLXTrainer(BaseTrainer):
         @partial(mx.compile, inputs=captured_state, outputs=captured_state)
         def model_step(
             input_ids: mx.array,
+            attention_mask: mx.array,
+            labels: mx.array,
         ) -> mx.array:
-            input_ids, attention_mask, labels = collate_mlx(input_ids)
-
             loss, grads = loss_and_grad_fn(
                 self.model, input_ids, labels, attention_mask=attention_mask
             )
@@ -231,8 +232,10 @@ class MLXTrainer(BaseTrainer):
             measure_time=measure_time,
         ):
             input_ids = mx.array(batch["input_ids"], dtype=mx.int32)
+            attention_mask = mx.array(batch["attention_mask"], dtype=mx.bool_)  # type: ignore
+            labels = mx.array(batch["labels"], dtype=mx.int32)
 
-            loss = model_step(input_ids)
+            loss = model_step(input_ids, attention_mask, labels)
 
             if iteration.i_step % 2 == 0:
                 # Compute the new parameters but also the optimizer state.
@@ -302,7 +305,8 @@ class MLXTrainer(BaseTrainer):
 
         for batch in self.validation_stream:
             input_ids = mx.array(batch["input_ids"], dtype=mx.int32)
-            input_ids, attention_mask, labels = collate_mlx(input_ids)
+            attention_mask = mx.array(batch["attention_mask"], dtype=mx.bool_)  # type: ignore
+            labels = mx.array(batch["labels"], dtype=mx.int32)
             loss = eval_step(input_ids, attention_mask, labels)
 
             # ─── 2. デバイス上で累積 ───
@@ -437,7 +441,8 @@ def collate_np(sample: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     labels = np.where(shifted == PAD_TOKEN_ID, IGNORE_TOKEN_ID, shifted)
 
     return {
-        "input_ids": ids,  # ndarray のまま
-        "attention_mask": attn_mask,
+        "input_ids": ids,
+        # MLX data does not accept bool type
+        "attention_mask": attn_mask.astype(np.uint8),
         "labels": labels,
     }
