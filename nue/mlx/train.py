@@ -111,8 +111,8 @@ class MLXTrainer(BaseTrainer):
         )
 
         # NOTE: Adam だと速く収束するが鋭い谷に落ちやすい
-        # optimizer = optim.Adam(model.parameters(), lr=lr)
         # NOTE: SGD は安定性を増すが、データ量が少ない時は収束しなかった
+        # NOTE: Lion は速度面で差はなく、パラメータ調整が手間だったの採用見送り
         optimizer = AdamW(
             learning_rate=lr_scheduler,
             # 過学習防止のため正則化
