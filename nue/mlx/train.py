@@ -26,7 +26,7 @@ import mlx.data
 import mlx.nn as nn
 import numpy as np
 from datasets import Dataset
-from mlx.optimizers import Lion, Optimizer
+from mlx.optimizers import AdamW, Optimizer
 from mlx.utils import tree_flatten, tree_unflatten
 
 from nue.mlx.model import NueLM
@@ -113,11 +113,10 @@ class MLXTrainer(BaseTrainer):
         # NOTE: Adam だと速く収束するが鋭い谷に落ちやすい
         # optimizer = optim.Adam(model.parameters(), lr=lr)
         # NOTE: SGD は安定性を増すが、データ量が少ない時は収束しなかった
-        # NOTE: Lion を試す
-        optimizer = Lion(
+        optimizer = AdamW(
             learning_rate=lr_scheduler,
             # 過学習防止のため正則化
-            weight_decay=0.03,  # x3 larger than AdamW
+            weight_decay=0.01,
         )
 
         self.optimizer = optimizer

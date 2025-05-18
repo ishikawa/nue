@@ -114,7 +114,7 @@ def train_tokenizer_command(output_prefix: str, corpus_file: str, vocab_size: in
 @click.option(
     "--lr",
     "lr",
-    default=3e-5,  # x3 smaller than AdamW (1e-4)
+    default=1e-4,
     type=float,
     help="Learning rate",
 )
