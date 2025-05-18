@@ -402,23 +402,21 @@ def get_cosine_schedule_with_warmup(
 
 
 def collate(input_ids: mx.array) -> tuple[mx.array, mx.array, mx.array]:
-    # PAD マスク
-    pad_mask = cast(mx.array, input_ids == PAD_TOKEN_ID)  # bool
+    # PAD mask
+    pad_mask = cast(mx.array, input_ids == PAD_TOKEN_ID)
 
     # attention mask
-    attn_mask = ~pad_mask  # bool
+    attn_mask = ~pad_mask
 
-    # labels 本体（1 トークン左シフト）
-    # pad_mask のスライスで行う
+    # labels body (shift left by 1 token)
+    # reusing pad_mask[:, 1:]
     body = mx.where(
-        pad_mask[:, 1:],  # ← ここで再利用🎯
+        pad_mask[:, 1:],
         IGNORE_TOKEN_ID,
         input_ids[:, 1:],
     )
 
-    # 最後尾は常に IGNORE
     tail = mx.full((input_ids.shape[0], 1), IGNORE_TOKEN_ID, dtype=input_ids.dtype)
-
     labels = mx.concat([body, tail], axis=1)
 
     return input_ids, attn_mask, labels
