@@ -7,7 +7,7 @@ import pytest
 from datasets import Dataset
 
 from nue.mlx.model import NueLM
-from nue.mlx.train import MLXTrainer, collate
+from nue.mlx.train import MLXTrainer, collate_mlx, collate_np
 from nue.train.base import TrainingOptions
 from nue.train.tokenizer import IGNORE_TOKEN_ID, PAD_TOKEN_ID
 
@@ -139,24 +139,40 @@ def test_collate_correctness(input_np):
     # NumPy → MX
     input_mx = mx.array(input_np, dtype=mx.int32)
 
-    out_ids, attn_mask, labels = collate(input_mx)
+    out_ids_mlx, attn_mask_mlx, labels_mlx = collate_mlx(input_mx)
+    x = collate_np({"input_ids": input_np})
+    out_ids_np, attn_mask_np, labels_np = (
+        x["input_ids"],
+        x["attention_mask"],
+        x["labels"],
+    )
 
     # 1) input_ids はそのまま返る
-    assert np.array_equal(np.asarray(out_ids), input_np)
+    assert np.array_equal(np.asarray(out_ids_mlx), input_np)
+    assert np.array_equal(out_ids_np, input_np)
 
     # 2) attention_mask は PAD 位置だけ False
     expected_mask = input_np != PAD_TOKEN_ID
-    assert np.array_equal(np.asarray(attn_mask), expected_mask)
+    assert np.array_equal(np.asarray(attn_mask_mlx), expected_mask)
+    assert np.array_equal(attn_mask_np, expected_mask)
 
     # 3) labels は 1 トークン左シフト & PAD→IGNORE
     shifted = np.full_like(input_np, IGNORE_TOKEN_ID)
     shifted[:, :-1] = input_np[:, 1:]
     shifted = np.where(shifted == PAD_TOKEN_ID, IGNORE_TOKEN_ID, shifted)
-    assert np.array_equal(np.asarray(labels), shifted)
+    assert np.array_equal(np.asarray(labels_mlx), shifted)
+    assert np.array_equal(labels_np, shifted)
 
 
-def test_label_ignore_for_all_pad():
+def test_collate_label_ignore_for_all_pad():
     """全トークン PAD の行でもラベルはすべて IGNORE"""
     input_np = np.full((2, 4), PAD_TOKEN_ID, dtype=np.int32)
-    _, _, labels = collate(mx.array(input_np))
+
+    # MLX
+    _, _, labels = collate_mlx(mx.array(input_np))
     assert np.all(np.asarray(labels) == IGNORE_TOKEN_ID)
+
+    # NumPy
+    x = collate_np({"input_ids": input_np})
+    labels = x["labels"]
+    assert np.all(labels == IGNORE_TOKEN_ID)
