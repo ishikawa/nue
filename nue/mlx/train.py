@@ -95,7 +95,7 @@ class MLXTrainer(BaseTrainer):
                 .batch(self.options.batch_size)
                 # NumPy で collate - CPU スレッドで並列化される
                 .sample_transform(collate_np)
-                .prefetch(4, os.cpu_count())
+                .prefetch(os.cpu_count() or 2, os.cpu_count() or 2)
             )
 
         # Load dataset into mlx buffer
