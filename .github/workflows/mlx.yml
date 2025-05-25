@@ -3,8 +3,18 @@ name: CI on macOS
 on:
   push:
     branches: ["main"]
+    paths:
+      - 'nue/mlx/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/mlx.yml'
   pull_request:
     branches: ["main"]
+    paths:
+      - 'nue/mlx/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/mlx.yml'
 
 jobs:
   build:
